@@ -1,0 +1,36 @@
+{
+  "id": "zen-tab-wand",
+  "name": "Zen Tab Wand",
+  "description": "One-click tab tidy. Sorts open tabs into groups using your domain rules first, then optionally an AI engine (built-in or Ollama) for everything the rules miss. Tidy fusion: separator wave animations, MIN_TABS gating, and ATG favicon colors.",
+  "homepage": "https://github.com/LaloCornejo/zen-tidy-wand-fusion",
+  "supportsUnload": false,
+  "style": {
+    "chrome": "userChrome.css"
+  },
+  "scripts": {
+    "auto-organize.uc.mjs": {
+      "include": [
+        "chrome://browser/content/browser.xhtml",
+        "about:preferences*",
+        "chrome://browser/content/preferences/preferences.xhtml*"
+      ]
+    }
+  },
+  "readme": "https://raw.githubusercontent.com/LaloCornejo/zen-tidy-wand-fusion/main/README.md",
+  "image": "https://raw.githubusercontent.com/LaloCornejo/zen-tidy-wand-fusion/main/image.png",
+  "author": "franklinl",
+  "ai": "yes",
+  "version": "1.1.0-fusion",
+  "preferences": "preferences.json",
+  "modules": ["Vertex-Mods/Advanced-Tab-Groups"],
+  "tags": [
+    "Tabs",
+    "Tab Groups",
+    "Productivity",
+    "AI",
+    "Ollama"
+  ],
+  "createdAt": "2026-05-15",
+  "updatedAt": "2026-09-08",
+  "fork": ["zen"]
+}

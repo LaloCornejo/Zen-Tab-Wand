@@ -1,0 +1,155 @@
+[
+  {
+    "type": "separator",
+    "label": "Group Rules"
+  },
+
+  {
+    "type": "separator",
+    "label": "Skip Domains"
+  },
+
+  {
+    "type": "separator",
+    "label": "Backup & Restore"
+  },
+
+  {
+    "type": "separator",
+    "label": "Look & Feel"
+  },
+  {
+    "type": "checkbox",
+    "label": "Minimal style — strip group colors and match Zen's address-bar styling",
+    "property": "extensions.zen-auto-organize.minimal-style",
+    "defaultValue": false
+  },
+  {
+    "type": "checkbox",
+    "label": "Strict rule enforcement — eject tabs from a group when their hostname isn't in that group's rule",
+    "property": "extensions.zen-auto-organize.strict-rules",
+    "defaultValue": false
+  },
+  {
+    "type": "dropdown",
+    "label": "Rule matching priority — choose whether URL/domain matches or title matches are checked first",
+    "property": "extensions.zen-auto-organize.match-mode",
+    "defaultValue": "url-then-title",
+    "options": [
+      { "label": "URL only", "value": "url-only" },
+      { "label": "Title only", "value": "title-only" },
+      { "label": "URL then Title", "value": "url-then-title" },
+      { "label": "Title then URL", "value": "title-then-url" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "label": "Gradient style — choose how two-color group gradients are drawn",
+    "property": "extensions.zen-auto-organize.gradient-style",
+    "defaultValue": "left-right",
+    "options": [
+      { "label": "Left to right", "value": "left-right" },
+      { "label": "Right to left", "value": "right-left" },
+      { "label": "Top to bottom", "value": "top-bottom" },
+      { "label": "Bottom to top", "value": "bottom-top" },
+      { "label": "Diagonal down", "value": "diagonal-down" },
+      { "label": "Diagonal up", "value": "diagonal-up" },
+      { "label": "Radial", "value": "radial" }
+    ]
+  },
+
+  {
+    "type": "separator",
+    "label": "AI Sorting"
+  },
+  {
+    "type": "checkbox",
+    "label": "Enable local AI engine (Tidy fusion)",
+    "property": "browser.ml.enable",
+    "force": true,
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Tidy animations — separator wave sweep and failure pulse on sort (Tidy fusion)",
+    "property": "extensions.zen-auto-organize.tidy-animations",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "ATG favicon colors — use Advanced Tab Groups favicon color when available (Tidy fusion)",
+    "property": "extensions.zen-auto-organize.tidy-atg-colors",
+    "defaultValue": true
+  },
+  {
+    "type": "dropdown",
+    "label": "AI engine",
+    "property": "extensions.zen-auto-organize.ai-engine",
+    "defaultValue": "off",
+    "placeholder": false,
+    "options": [
+      { "label": "None", "value": "off" },
+      { "label": "Local — Built-in model, limited capability", "value": "local" },
+      { "label": "Ollama — Stronger model, requires Ollama running locally", "value": "ollama" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "label": "AI title learning — propose reviewed T chips from tab titles (simple) and/or page content (complex)",
+    "property": "extensions.zen-auto-organize.ai-title-learning",
+    "defaultValue": "off",
+    "placeholder": false,
+    "options": [
+      { "label": "None", "value": "off" },
+      { "label": "Review and Save (Simple)", "value": "review-save-simple" },
+      { "label": "Review and Save (Complex)", "value": "review-save-complex" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "label": "Existing AI matches — choose whether matched tabs update saved rules",
+    "property": "extensions.zen-auto-organize.ai-existing-behavior",
+    "defaultValue": "always-add",
+    "options": [
+      { "label": "Move + Save Domain — Move the tab and add its domain to the matched rule", "value": "always-add" },
+      { "label": "Move Once — Move the tab now; do not update saved rules", "value": "transient" }
+    ]
+  },
+  {
+    "type": "dropdown",
+    "label": "New AI groups — choose whether new groups become saved rules",
+    "property": "extensions.zen-auto-organize.ai-new-group-behavior",
+    "defaultValue": "auto-add",
+    "options": [
+      { "label": "Preview + Save Rule — Review first; kept groups become saved rules", "value": "auto-add" },
+      { "label": "Group Once — Create groups now; do not save rules", "value": "transient" },
+      { "label": "Zen Edit Prompt — Create groups, then open Zen's rename/color dialog", "value": "prompt" },
+      { "label": "Fresh Rebuild — Ignore current rules and regroup all tabs from scratch", "value": "fresh-categories" },
+      { "label": "Preview Only — Review/re-assign first; apply groups without saving rules", "value": "identify-only" }
+    ]
+  },
+  {
+    "type": "string",
+    "label": "Ollama host",
+    "property": "extensions.zen-auto-organize.ai-ollama-host",
+    "defaultValue": "http://localhost:11434"
+  },
+  {
+    "type": "string",
+    "label": "Ollama model",
+    "property": "extensions.zen-auto-organize.ai-ollama-model",
+    "defaultValue": "qwen2.5:1.5b"
+  },
+  {
+    "type": "checkbox",
+    "label": "Keep Ollama model warm — preloads at browser start and keeps it loaded between clicks (faster tidy clicks; uses VRAM continuously)",
+    "property": "extensions.zen-auto-organize.ai-ollama-warmup",
+    "defaultValue": true
+  },
+  {
+    "type": "string",
+    "label": "Local AI batch size (only used when >75 unmatched tabs; smaller = gentler on CPU, larger = faster)",
+    "property": "extensions.zen-auto-organize.ai-local-batch-size",
+    "defaultValue": "30"
+  }
+]
