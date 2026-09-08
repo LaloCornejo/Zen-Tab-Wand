@@ -91,7 +91,17 @@ export const CONFIG = {
   AI_LOCAL_CHUNK_THRESHOLD: 75,         // unmatched count above which chunking + dedupe kicks in
   AI_LOCAL_BATCH_SIZE_PREF: "extensions.zen-auto-organize.ai-local-batch-size",
   AI_LOCAL_BATCH_SIZE_DEFAULT: 30,      // pref default; user-overridable
-  AI_LOCAL_CONFIRM_THRESHOLD: 500,      // unmatched count above which a confirmation modal is shown before Pass 2
+  AI_LOCAL_CONFIRM_THRESHOLD: 500,         // unmatched count above which a confirmation modal is shown before Pass 2
+
+  // Multi-topic platforms: one domain hosts many unrelated topics, so saving
+  // the bare domain into a rule over-claims (youtube.com once captured every
+  // YouTube tab into a single show's group). AI rule-growth never saves these
+  // as domains — it saves recurring title terms instead. Existing user rules
+  // are untouched; this only guards future auto-saves.
+  PLATFORM_HOSTS: [
+    "youtube.com", "youtu.be", "reddit.com", "x.com", "twitter.com",
+    "facebook.com", "instagram.com", "tiktok.com", "twitch.tv",
+  ],
 
   // chrome:// URLs served by Sine from this mod's directory.
   RULES_URL: "chrome://sine/content/zen-tab-wand/rules.json",

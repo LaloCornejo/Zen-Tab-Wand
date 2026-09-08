@@ -320,8 +320,7 @@ const TIDY_KEYWORD_STOPWORDS = new Set([
   "did", "its", "let", "put", "say", "she", "too", "use",
 ]);
 
-const extractTidyKeywords = (titles) => {
-  const wordCount = {};
+const extractTidyKeywords = (titles) => {  const wordCount = {};
   for (const w of titles.join(" ").toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2)) {
     wordCount[w] = (wordCount[w] || 0) + 1;
   }
@@ -329,6 +328,29 @@ const extractTidyKeywords = (titles) => {
     .filter(([word]) => !TIDY_KEYWORD_STOPWORDS.has(word))
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
+    .map(([word]) => word);
+};
+
+// Hosts where one domain holds many unrelated topics — saving the bare domain
+// into a rule over-claims every future tab on that host (youtube.com once
+// captured all YouTube tabs into a single show's group).
+const isPlatformHost = (hostname) => {
+  if (!hostname) return false;
+  const hosts = CONFIG.PLATFORM_HOSTS || [];
+  return hosts.some((p) => hostname === p || hostname.endsWith(`.${p}`));
+};
+
+// Title words recurring across cluster members (min count 2) — the safe thing
+// to persist when a cluster lives on platform hosts.
+const frequentTitleTerms = (titles, minCount = 2, maxTerms = 3) => {
+  const counts = {};
+  for (const w of titles.join(" ").toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2 && !TIDY_KEYWORD_STOPWORDS.has(word))) {
+    counts[w] = (counts[w] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .filter(([, n]) => n >= minCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
     .map(([word]) => word);
 };
 
@@ -1086,7 +1108,9 @@ export const applyPass2 = (pass2Result, workspaceId, rules) => {
         movedToExisting++;
       }
       if (existingBehavior === "always-add") {
-        if (addDomainToRule(a.groupName, a.tabInfo.hostname, rules)) rulesGrown++;
+        if (isPlatformHost(a.tabInfo.hostname)) {
+          console.log(`${LOG} AI: not saving platform host "${a.tabInfo.hostname}" into rule "${a.groupName}" (title-match it instead)`);
+        } else if (addDomainToRule(a.groupName, a.tabInfo.hostname, rules)) rulesGrown++;
       }
     } catch (e) {
       console.error(`${LOG} AI: failed to move tab into "${a.groupName}":`, e);
@@ -1122,14 +1146,25 @@ export const applyPass2 = (pass2Result, workspaceId, rules) => {
       if (newGroupBehavior === "auto-add") {
         // Build a rule from the cluster's hostnames, including the chosen color
         // so syncAllGroupColors on future tidy-clicks keeps the same color.
+        // Platform hosts never persist as domains (they'd over-claim); recurring
+        // title terms persist instead. A platform-only cluster with no shared
+        // terms saves nothing — the group still exists, just transiently.
         const hostnames = [...new Set(cluster.tabs.map((t) => t.hostname).filter((h) => h))];
-        if (hostnames.length > 0 && !rules.some((r) => r.name === cluster.name)) {
+        const saveDomains = hostnames.filter((h) => !isPlatformHost(h));
+        let saveTerms = [];
+        if (saveDomains.length < hostnames.length || saveDomains.length === 0) {
+          saveTerms = frequentTitleTerms(cluster.tabs.map((t) => t.title).filter(Boolean));
+        }
+        if ((saveDomains.length > 0 || saveTerms.length > 0) && !rules.some((r) => r.name === cluster.name)) {
           rules.push({
             name: cluster.name,
-            domains: hostnames,
+            domains: saveDomains,
+            ...(saveTerms.length > 0 ? { titleTerms: saveTerms } : {}),
             color,
           });
           newRulesCreated++;
+        } else if (!rules.some((r) => r.name === cluster.name)) {
+          console.log(`${LOG} AI: no rule saved for "${cluster.name}" (platform hosts, no shared title terms)`);
         }
       } else if (newGroupBehavior === "prompt") {
         openZenEditModalForGroup(newGroup);
