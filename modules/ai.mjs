@@ -148,6 +148,18 @@ const buildEmbedText = (titleOrInfo) => {
 // token cap, but generous enough to fit title + hostname + rich snippet).
 const MAX_EMBED_INPUT_CHARS = 1000;
 
+// TIDY_FUSION-2: richer embed input — title + (hostname) + page snippet
+// (og:type, h1, description), mirroring runPass2Fresh. embed() takes strings
+// directly, bypassing the {title, hostname} formatter above.
+const buildRichEmbedText = (title, hostname, snippetByHostname) => {
+  const parts = [];
+  if (title) parts.push(title);
+  if (hostname) parts.push(`(${hostname})`);
+  const snip = hostname ? snippetByHostname?.get(hostname) : "";
+  if (snip) parts.push(snip);
+  return parts.join(" ").trim() || hostname || title || "";
+};
+
 // The MLEngineParent port can die between clicks (Firefox tears it down when
 // the engine pref flips, or when memory pressure kicks in). When that happens
 // the cached `embeddingEnginePromise` still resolves to a dead engine whose
@@ -251,14 +263,18 @@ const computeExistingGroupTabEmbeddings = async (workspaceId, rules, excludeTabs
     ).filter((t) => !excludeTabs.has(t));
     if (tabsInGroup.length === 0) continue;
     // Same title+hostname format we use for the unmatched candidates so the
-    // embeddings live in the same semantic space.
-    const inputs = tabsInGroup.map((t) => ({
-      title: getTabTitle(t),
-      hostname: (() => {
-        try { return new URL(t.linkedBrowser?.currentURI?.spec || "").hostname.replace(/^www\./, ""); }
-        catch { return ""; }
-      })(),
-    })).filter((i) => i.title);
+    // embeddings live in the same semantic space — enriched with snippets
+    // when the caller supplies its map (TIDY_FUSION-2).
+    const snippetMap = opts.snippetByHostname;
+    const inputs = tabsInGroup.map((t) => {
+      const title = getTabTitle(t);
+      let hostname = "";
+      try { hostname = new URL(t.linkedBrowser?.currentURI?.spec || "").hostname.replace(/^www\./, ""); }
+      catch { hostname = ""; }
+      if (!title) return null;
+      if (snippetMap) return buildRichEmbedText(title, hostname, snippetMap);
+      return { title, hostname };
+    }).filter(Boolean);
     if (inputs.length === 0) continue;
     const embs = (await embedBatch(inputs, { batchSize, yieldBetween })).filter((v) => v);
     if (embs.length === 0) continue;
@@ -398,6 +414,28 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   const useChunking = unmatched.length > CONFIG.AI_LOCAL_CHUNK_THRESHOLD;
   const batchSize = useChunking ? getLocalAIBatchSize() : CONFIG.AI_EMBEDDING_BATCH_SIZE;
 
+  // TIDY_FUSION-2: one snippet fetch per unique hostname (bounded parallel;
+  // fetchPageSnippet self-times-out, misses drop to "" silently). Same
+  // enriched signal runPass2Fresh uses — bare titles under-specify the topic.
+  const snippetByHostname = new Map();
+  {
+    const urlByHostname = new Map();
+    for (const t of unmatched) {
+      const u = t.url || "";
+      if (t.hostname && (u.startsWith("http://") || u.startsWith("https://")) && !urlByHostname.has(t.hostname)) {
+        urlByHostname.set(t.hostname, u);
+      }
+    }
+    const hosts = [...urlByHostname.keys()];
+    if (hosts.length > 0) {
+      const t0 = performance.now();
+      const snippets = await Promise.all(hosts.map((h) => fetchPageSnippet(urlByHostname.get(h))));
+      let hits = 0;
+      hosts.forEach((h, i) => { if (snippets[i]) { snippetByHostname.set(h, snippets[i]); hits++; } });
+      console.log(`${LOG} AI: page snippets ${hits}/${hosts.length} in ${Math.round(performance.now() - t0)}ms`);
+    }
+  }
+
   // Resolve a per-tab embedding. Without chunking, `tabEmbeddings[i]`.
   // With chunking, the embedding for the tab's hostname (one per hostname).
   let getEmbeddingForTab;
@@ -416,7 +454,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
       console.log(`${LOG} AI: large workspace (${unmatched.length} > ${CONFIG.AI_LOCAL_CHUNK_THRESHOLD}) — chunking on, deduped to ${reps.length} unique hostname(s), batchSize=${batchSize}`);
 
       const repEmbeddings = await embedBatch(
-        reps.map((t) => ({ title: t.title, hostname: t.hostname })),
+        reps.map((t) => buildRichEmbedText(t.title, t.hostname, snippetByHostname)),
         { batchSize, yieldBetween: true },
       );
       const hostToEmb = new Map();
@@ -426,7 +464,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
       getEmbeddingForTab = (tabInfo) => hostToEmb.get(tabInfo.hostname);
     } else {
       const tabEmbeddings = await embedBatch(
-        unmatched.map((t) => ({ title: t.title, hostname: t.hostname })),
+        unmatched.map((t) => buildRichEmbedText(t.title, t.hostname, snippetByHostname)),
         { batchSize },
       );
       getEmbeddingForTab = (_tabInfo, idx) => tabEmbeddings[idx];
@@ -445,6 +483,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   const groupTabEmbeddings = await computeExistingGroupTabEmbeddings(workspaceId, rules, excludeSet, {
     batchSize: useChunking ? batchSize : undefined,
     yieldBetween: useChunking,
+    snippetByHostname,
   });
   console.log(`${LOG} AI: collected per-tab embeddings for ${groupTabEmbeddings.size} existing group(s): ${[...groupTabEmbeddings.keys()].map((n) => `${n}(${groupTabEmbeddings.get(n).length})`).join(", ") || "(none)"}`);
 
@@ -497,6 +536,14 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   // applyPass2 honors the "New AI groups" pref (save-once/prompt/preview).
   const newGroups = [];
   const skipped = [...empty.skipped];
+  // TIDY_FUSION-1: centroids of existing groups so near-duplicate clusters
+  // fold into them instead of spawning "Github" next to "GitHub".
+  const groupCentroids = new Map();
+  for (const [groupName, embs] of groupTabEmbeddings) {
+    const avg = averageVectors(embs);
+    if (avg) groupCentroids.set(groupName, l2Normalize(avg));
+  }
+  const MERGE_BAR = CONFIG.TIDY_HIGH * 0.9;
   if (remainder.length >= 2) {
     const idxGroups = clusterEmbeddings(
       remainder.map((r) => r.embedding),
@@ -508,6 +555,20 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
         continue;
       }
       const members = idx.map((k) => remainder[k].info);
+      const memberAvg = averageVectors(idx.map((k) => remainder[k].embedding));
+      const centroid = memberAvg ? l2Normalize(memberAvg) : null;
+      let mergeTo = null;
+      if (centroid) {
+        for (const [groupName, gc] of groupCentroids) {
+          const s = cosineSimilarity(centroid, gc);
+          if (s >= MERGE_BAR && (!mergeTo || s > mergeTo.sim)) mergeTo = { groupName, sim: s };
+        }
+      }
+      if (mergeTo) {
+        for (const m of members) assignedToExisting.push({ tabInfo: m, groupName: mergeTo.groupName, similarity: mergeTo.sim });
+        console.log(`${LOG} AI: folded ${members.length} tab(s) into existing "${mergeTo.groupName}" (centroid ${mergeTo.sim.toFixed(3)})`);
+        continue;
+      }
       const name = await nameClusterWithTopic(members);
       newGroups.push({ name, tabs: members });
       console.log(`${LOG} AI: new cluster "${name}" (${members.length} tab(s))`);
