@@ -692,6 +692,38 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
     singletonCount += remainder.length;
   }
 
+  // Deterministic fallback: leftover tabs sharing a hostname group up WITHOUT
+  // embeddings — same-site leftovers land together even on engine-dead runs or
+  // when titles are too dissimilar to clear the AI bar. Members that match an
+  // existing rule name file into it; the rest form a host-named group.
+  {
+    const byHost = new Map();
+    for (const t of skipped) {
+      if (!t.hostname) continue;
+      if (!byHost.has(t.hostname)) byHost.set(t.hostname, []);
+      byHost.get(t.hostname).push(t);
+    }
+    const grouped = new Set();
+    for (const [, members] of byHost) {
+      if (members.length < 2) continue;
+      const name = nameClusterFromHostnames(members);
+      if (rules.some((r) => r.name === name)) {
+        for (const m of members) assignedToExisting.push({ tabInfo: m, groupName: name, similarity: 1 });
+        console.log(`${LOG} AI: host fallback — ${members.length} "${members[0].hostname}" tab(s) → existing "${name}"`);
+      } else {
+        newGroups.push({ name, tabs: members });
+        console.log(`${LOG} AI: host fallback — new group "${name}" (${members.length} tab(s))`);
+      }
+      members.forEach((m) => grouped.add(m));
+      singletonCount = Math.max(0, singletonCount - members.length);
+    }
+    if (grouped.size > 0) {
+      const rest = skipped.filter((t) => !grouped.has(t));
+      skipped.length = 0;
+      skipped.push(...rest);
+    }
+  }
+
   // Visibility into misses: "embedded" proves the engine works, so a later
   // "nothing to group" reads as genuinely-uncategorized, not engine failure.
   console.log(`${LOG} AI: embedded ${embeddedCount}/${unmatched.length} unmatched tab(s)` +
