@@ -660,7 +660,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   if (remainder.length >= 2) {
     const idxGroups = clusterEmbeddings(
       remainder.map((r) => r.embedding),
-      CONFIG.TIDY_LOW
+      typeof CONFIG.TIDY_LOW === "number" ? CONFIG.TIDY_LOW : 0.45
     );
     for (const idx of idxGroups) {
       if (idx.length < 2) {

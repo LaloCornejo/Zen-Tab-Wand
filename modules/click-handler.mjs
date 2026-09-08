@@ -548,6 +548,10 @@ const organizeInner = async () => {
           }
         } else if (pass2.skipped.length > 0) {
           console.log(`${LOG} Pass 2: nothing to group (skipped ${pass2.skipped.length} ${inputLabel})`);
+        } else {
+          // Shouldn't normally happen (every input lands in assigned, new, or
+          // skipped) — log it plainly so a future pipeline hole can't hide.
+          console.warn(`${LOG} Pass 2: empty result (0 assigned, 0 new, 0 skipped) over ${inputCount} ${inputLabel}`);
         }
       } catch (e) {
         console.error(`${LOG} Pass 2 failed:`, e);

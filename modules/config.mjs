@@ -80,6 +80,8 @@ export const CONFIG = {
   AI_EXISTING_GROUP_THRESHOLD: 0.65,    // min (raw + boost) cosine sim for "tab belongs to existing group"
   AI_EXISTING_GROUP_BOOST: 0.10,        // added to existing-group sim
   AI_EMBEDDING_BATCH_SIZE: 5,           // tabs per parallel embedding batch (small-workspace default)
+  TIDY_LOW: 0.45,                       // greedy new-cluster bar (Tidy SIMILARITY_THRESHOLD)
+  TIDY_HIGH: 0.65,                      // existing-group bar reference (Tidy GROUP_SIMILARITY_THRESHOLD; merge bar = ×0.9)
 
   // Local-AI chunking. When the count of unmatched tabs to embed exceeds the
   // chunking threshold, the engine switches to a more conservative pipeline:
