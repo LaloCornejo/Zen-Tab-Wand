@@ -423,6 +423,57 @@ const nameClusterWithTopic = async (members) => {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * Local constrained-vocabulary classification for the preview modal's
+ * "re-assign to planned" lane: score each pending tab by MAX embedding
+ * similarity against every member tab of every kept bucket, first bucket
+ * past the existing-group bar wins. Same shape as the Ollama lane.
+ */
+export const classifyIntoGroups = async (pendingTabs, buckets) => {
+  const assignments = [];
+  const skipped = [];
+  if (!pendingTabs?.length || !buckets?.length) {
+    return { assignments, skipped: [...(pendingTabs || [])] };
+  }
+  const emptyMap = new Map();
+  const bucketEmbs = new Map(); // name → number[][]
+  for (const b of buckets) {
+    if (!b?.name || !b.tabs?.length) continue;
+    const embs = (
+      await embedBatch(
+        b.tabs.map((t) => buildRichEmbedText(t.title, t.hostname, emptyMap)),
+        {}
+      )
+    ).filter(Boolean);
+    if (embs.length > 0) bucketEmbs.set(b.name, embs);
+  }
+  const pendEmbs = await embedBatch(
+    pendingTabs.map((t) => buildRichEmbedText(t.title, t.hostname, emptyMap)),
+    {}
+  );
+  pendingTabs.forEach((tabInfo, i) => {
+    const emb = pendEmbs[i];
+    if (!emb) {
+      skipped.push(tabInfo);
+      return;
+    }
+    let best = null;
+    for (const [name, embs] of bucketEmbs) {
+      let m = 0;
+      for (const e of embs) {
+        const s = cosineSimilarity(emb, e);
+        if (s > m) m = s;
+      }
+      if (m > CONFIG.AI_EXISTING_GROUP_THRESHOLD && (!best || m > best.sim)) {
+        best = { groupName: name, sim: m };
+      }
+    }
+    if (best) assignments.push({ tabInfo, groupName: best.groupName, similarity: best.sim });
+    else skipped.push(tabInfo);
+  });
+  return { assignments, skipped };
+};
+
+/**
  * Run Pass 2 AI sorting over the Pass-1-unmatched tabs.
  *
  * @param {Array} unmatched   — tab info objects from runPass1 result

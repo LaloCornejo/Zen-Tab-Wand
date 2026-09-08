@@ -132,5 +132,22 @@
     "label": "Local AI batch size (only used when >75 unmatched tabs; smaller = gentler on CPU, larger = faster)",
     "property": "extensions.zen-auto-organize.ai-local-batch-size",
     "defaultValue": "30"
+  },
+
+  {
+    "type": "separator",
+    "label": "Automation"
+  },
+  {
+    "type": "string",
+    "label": "Auto-tidy threshold — auto-run when ungrouped tabs reach this count (0 = off; pairs best with non-preview AI behaviors)",
+    "property": "extensions.zen-auto-organize.auto-tidy-threshold",
+    "defaultValue": "0"
+  },
+  {
+    "type": "string",
+    "label": "Dusty days — park tabs unvisited for this many days into a Dusty group (0 = off)",
+    "property": "extensions.zen-auto-organize.dusty-days",
+    "defaultValue": "0"
   }
 ]

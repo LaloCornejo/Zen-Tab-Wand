@@ -93,6 +93,12 @@ export const CONFIG = {
   AI_LOCAL_BATCH_SIZE_DEFAULT: 30,      // pref default; user-overridable
   AI_LOCAL_CONFIRM_THRESHOLD: 500,         // unmatched count above which a confirmation modal is shown before Pass 2
 
+  // Automation (all off by default — opt in via the Automation section).
+  AUTO_TIDY_THRESHOLD_PREF: "extensions.zen-auto-organize.auto-tidy-threshold",
+  AUTO_TIDY_DEBOUNCE_MS: 3000,              // quiet period after tab activity before auto-tidy fires
+  DUSTY_DAYS_PREF: "extensions.zen-auto-organize.dusty-days",
+  DUSTY_GROUP_NAME: "Dusty",                // parked stale tabs live here; auto-registered as a rule so it survives sweeps
+
   // Multi-topic platforms: one domain hosts many unrelated topics, so saving
   // the bare domain into a rule over-claims (youtube.com once captured every
   // YouTube tab into a single show's group). AI rule-growth never saves these

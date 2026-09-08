@@ -15,7 +15,8 @@ import {
   syncAllGroupColors,
 } from "./groups.mjs";
 import { runPass1, applyPass1, matchesDomain } from "./pass1.mjs";
-import { runPass2, runPass2Fresh, applyPass2 } from "./ai.mjs";
+import { runPass2, runPass2Fresh, applyPass2, classifyIntoGroups } from "./ai.mjs";
+import { takeSnapshot, parkDustyTabs } from "./actions.mjs";
 import { checkOllamaReady, reportOllamaError, normalizeOllamaHost, runPass2Ollama, runPass2OllamaFresh, classifyExistingGroupsBatch, proposeTitleTermPatches } from "./ollama.mjs";
 import { showPreviewModal } from "./preview-modal.mjs";
 
@@ -81,6 +82,24 @@ const actionFor = (currentGroup, targetGroup) => {
 };
 
 export const handleOrganizeClick = async () => {
+  // Re-entrancy guard: rapid double-clicks and auto-tidy must never overlap
+  // a run (moves + snapshots assume a single pipeline in flight).
+  if (organizeInFlight) {
+    console.log(`${LOG} tidy already running — skipping re-entrant click`);
+    return;
+  }
+  organizeInFlight = true;
+  try {
+    await organizeInner();
+  } finally {
+    organizeInFlight = false;
+  }
+};
+
+let organizeInFlight = false;
+export const isOrganizing = () => organizeInFlight;
+
+const organizeInner = async () => {
   wiggleButton();
 
   const workspaceId = window.gZenWorkspaces?.activeWorkspace;
@@ -113,6 +132,10 @@ export const handleOrganizeClick = async () => {
     return;
   }
 
+  // 4a. Snapshot pre-tidy membership so right-click → Undo last tidy can
+  // restore it. Taken before ANY moves (skip parking, dusty, Pass 1).
+  takeSnapshot(allTabs);
+
   // 4b. Handle skip-domains. Tabs whose hostname matches any skip pattern get
   // ejected from any current group and parked at the top of the workspace,
   // then excluded from the rest of the pipeline (Pass 1 + Pass 2). The skip
@@ -134,6 +157,20 @@ export const handleOrganizeClick = async () => {
   if (tabs.length === 0) {
     console.log(`${LOG} no non-skipped eligible tabs in workspace ${workspaceId}`);
     return;
+  }
+
+  // 4c. Dusty parking (opt-in via Automation). Stale tabs collect into the
+  // Dusty group and leave the pipeline — Pass 1/AI never see them.
+  {
+    const dusty = await parkDustyTabs(tabs, workspaceId, rules);
+    if (dusty.parked > 0) {
+      console.log(`${LOG} Dusty: parked ${dusty.parked} stale tab(s), ${dusty.remaining.length} continue to Pass 1`);
+      tabs = dusty.remaining;
+    }
+    if (tabs.length === 0) {
+      console.log(`${LOG} all remaining tabs parked as Dusty — nothing for Pass 1`);
+      return;
+    }
   }
 
   // 5. Pass 1 matching + diagnostic logging.
@@ -359,8 +396,8 @@ export const handleOrganizeClick = async () => {
           //     applies to BOTH engines (local Fresh is hostname-named so the
           //     modal lets the user rename / re-assign before applying)
           //   - Preview + Save Rule / Move + Save Domain → show so user can veto rule mutations
-          //     before they hit the rules table. Ollama-only — those modes imply
-          //     LLM-style semantic naming.
+          //     before they hit the rules table. Both engines — Local now also
+          //     mutates rules (domain saves + new-group rules + title terms).
           //   - Group Once (either) → no modal (it's just a temp move per user)
           //   - Zen Edit Prompt → no modal (Zen handles per-group via its own edit modal)
           //   - Fresh Rebuild → no modal (no rule mutations happen here)
@@ -370,7 +407,7 @@ export const handleOrganizeClick = async () => {
           if (isIdentifyOnly) {
             showModal = true;
             modalReason = "Preview Only";
-          } else if (aiEngine === "ollama" && !isFreshMode && newGroupBehavior !== "prompt") {
+          } else if (!isFreshMode && newGroupBehavior !== "prompt") {
             const existingBehavior = getAIExistingBehavior();
             const flags = [];
             if (existingBehavior === "always-add") flags.push("Move + Save Domain");
@@ -414,8 +451,12 @@ export const handleOrganizeClick = async () => {
               // "Re-assign to planned" — constrained-vocabulary classification.
               // Treats each kept bucket (new group or existing-target) as a
               // fake rule whose domains are its tabs' hostnames, then runs
-              // Phase-3-style classification into one of those names.
+              // Phase-3-style classification into one of those names. Local
+              // engine scores embedding max-similarity instead of asking Ollama.
               onAssignToPlanned: async (pendingTabs, keptBuckets) => {
+                if (aiEngine === "local") {
+                  return classifyIntoGroups(pendingTabs, keptBuckets);
+                }
                 const host = getOllamaHost();
                 const model = getOllamaModel();
                 const fakeRules = keptBuckets.map((g) => ({
@@ -437,8 +478,17 @@ export const handleOrganizeClick = async () => {
               // in the modal. Lets the user route a tab into any rule-named
               // group (e.g., "Dev") that the AI didn't propose this run. The
               // callback is only provided when rules actually exist — modal
-              // disables the button when undefined.
+              // disables the button when undefined. Local engine reuses the
+              // Pass-2 existing-group fit and shelves any new clusters as
+              // skipped (this lane never invents groups).
               onAssignToExisting: rules.length > 0 ? async (pendingTabs) => {
+                if (aiEngine === "local") {
+                  const r = await runPass2(pendingTabs, rules, workspaceId);
+                  return {
+                    assignments: r.assignedToExisting,
+                    skipped: [...r.skipped, ...r.newGroups.flatMap((g) => g.tabs)],
+                  };
+                }
                 const host = getOllamaHost();
                 const model = getOllamaModel();
                 const assignmentMap = await classifyExistingGroupsBatch(pendingTabs, rules, host, model);

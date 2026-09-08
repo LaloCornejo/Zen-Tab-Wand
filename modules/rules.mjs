@@ -301,6 +301,32 @@ export const getLocalAIBatchSize = () => {
 };
 
 // What to do when AI assigns a tab to an existing rule-matched group.
+// Auto-tidy: run the pipeline when ungrouped tabs reach this count (0 = off).
+// Debounced in browser-ui; pairs best with non-preview AI behaviors.
+export const getAutoTidyThreshold = () => {
+  try {
+    const raw = Services.prefs.getStringPref(CONFIG.AUTO_TIDY_THRESHOLD_PREF, "0");
+    const v = parseInt(raw, 10);
+    if (!Number.isFinite(v) || v < 0) return 0;
+    return Math.min(500, v);
+  } catch {
+    return 0;
+  }
+};
+
+// Dusty parking: tabs unvisited for this many days collect into the Dusty
+// group (0 = off). Reads tab.lastAccessed, so only ever fires on tabs the
+// user genuinely hasn't touched.
+export const getDustyDays = () => {
+  try {
+    const raw = Services.prefs.getStringPref(CONFIG.DUSTY_DAYS_PREF, "0");
+    const v = parseInt(raw, 10);
+    if (!Number.isFinite(v) || v < 0) return 0;
+    return Math.min(365, v);
+  } catch {
+    return 0;
+  }
+};
 //   "always-add" — append the tab's hostname to that rule's domains (default)
 //   "transient"  — move the tab into the group, but don't touch the rule
 //
