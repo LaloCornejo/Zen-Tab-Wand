@@ -333,7 +333,6 @@ const extractTidyKeywords = (titles) => {
 };
 
 let topicEnginePromise = null;
-
 const loadTopicEngine = () => {
   if (topicEnginePromise) return topicEnginePromise;
   topicEnginePromise = (async () => {
@@ -352,6 +351,21 @@ const loadTopicEngine = () => {
     throw e;
   });
   return topicEnginePromise;
+};
+
+// TIDY_FUSION-3: preload the bundled models so the first wand click never
+// pays the cold-start cost (cold start is what produced the "Port does not
+// exist" cascade — engine port torn down before first use). Fire-and-forget
+// by design; failures stay silent, the click path retries anyway.
+export const warmupLocalEngines = () => {
+  loadEmbeddingEngine().then(
+    () => console.log(`${LOG} AI: local embedding engine warmed`),
+    () => {}
+  );
+  loadTopicEngine().then(
+    () => console.log(`${LOG} AI: topic engine warmed`),
+    () => {}
+  );
 };
 
 // Name a fresh cluster with the bundled topic model; fall back to Wand's
@@ -491,10 +505,13 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   //    against any individual tab in the group (not a centroid average).
   const assignedToExisting = [];
   const remainder = []; // { info, embedding } for tabs that didn't fit
+  let embeddedCount = 0;
+  let noEmbeddingCount = 0;
   for (let i = 0; i < unmatched.length; i++) {
     const tabInfo = unmatched[i];
     const emb = getEmbeddingForTab(tabInfo, i);
-    if (!emb) { empty.skipped.push(tabInfo); continue; }
+    if (!emb) { empty.skipped.push(tabInfo); noEmbeddingCount++; continue; }
+    embeddedCount++;
 
     let best = null;
     const allSims = [];
@@ -536,6 +553,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   // applyPass2 honors the "New AI groups" pref (save-once/prompt/preview).
   const newGroups = [];
   const skipped = [...empty.skipped];
+  let singletonCount = 0;
   // TIDY_FUSION-1: centroids of existing groups so near-duplicate clusters
   // fold into them instead of spawning "Github" next to "GitHub".
   const groupCentroids = new Map();
@@ -552,6 +570,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
     for (const idx of idxGroups) {
       if (idx.length < 2) {
         idx.forEach((k) => skipped.push(remainder[k].info));
+        singletonCount += idx.length;
         continue;
       }
       const members = idx.map((k) => remainder[k].info);
@@ -575,7 +594,13 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
     }
   } else {
     remainder.forEach((r) => skipped.push(r.info));
+    singletonCount += remainder.length;
   }
+
+  // Visibility into misses: "embedded" proves the engine works, so a later
+  // "nothing to group" reads as genuinely-uncategorized, not engine failure.
+  console.log(`${LOG} AI: embedded ${embeddedCount}/${unmatched.length} unmatched tab(s)` +
+    (skipped.length > 0 ? `, skipped ${skipped.length} (${noEmbeddingCount} no embedding, ${singletonCount} singleton)` : ""));
 
   return { assignedToExisting, newGroups, skipped };
 };
