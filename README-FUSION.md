@@ -50,6 +50,12 @@ Every graft is pref-gated, so disabling both `tidy-*` prefs restores stock Wand.
 4. Confirm ATG auto-installed (group headers, `browser.tabs.groups.*` prefs).
 5. After script edits: `about:support` → Clear Startup Cache → restart.
 
+## Credits
+
+- Base: [Zen Tab Wand](https://github.com/flantig/Zen-Tab-Wand) (MIT) by franklinl.
+- Donor: [Zen Tidy Tabs](https://github.com/Vertex-Mods/Zen-Tidy-Tabs) by Vertex.
+- Dependency: [Advanced Tab Groups](https://github.com/Vertex-Mods/Advanced-Tab-Groups) by Vertex.
+
 ## Test checklist
 
 - [ ] Wand icon appears in workspace separator.

@@ -1,10 +1,11 @@
 // Zen Tab Wand — Pass 2 (local AI) using Firefox's bundled ML engine.
 //
-// SCOPE: this engine ONLY assigns unmatched tabs into EXISTING rule-matched
-// groups. It does not invent new groups or name clusters — that role belongs
-// to the Ollama engine (modules/ollama.mjs). The local-AI path here uses just
-// the embedding model:
+// SCOPE: this engine assigns unmatched tabs into EXISTING rule-matched
+// groups AND clusters leftovers into NEW groups (Tidy behavior — greedy
+// clustering at TIDY_LOW, names from the bundled smart-tab-topic model).
+// It uses just Firefox's bundled models:
 //   - Mozilla/smart-tab-embedding (feature-extraction) — title → vector
+//   - Mozilla/smart-tab-topic (text2text-generation) — cluster → name
 //
 // Pipeline:
 //   1. Embed each Pass-1-unmatched tab title (with hostname appended).
@@ -76,12 +77,26 @@ const loadEmbeddingEngine = () => {
 
 // The embedding engine sometimes returns nested results — flatten / pool here so
 // callers always get a flat number[] back.
+//
+// TIDY_FUSION — call shape mirrors Firefox's own SmartTabGrouping
+// (tidy-tabs.uc.js:331-389): texts go as a batch with mean pooling +
+// normalization. Without "pooling: mean" the engine returns the raw per-token
+// tensor, the parser yields null, and Local AI silently sorts nothing.
 const poolEmbedding = (raw) => {
-  if (!raw) return null;
-  if (raw?.[0]?.embedding && Array.isArray(raw[0].embedding)) return averageVectors(raw[0].embedding);
-  if (Array.isArray(raw?.[0])) return averageVectors(raw[0]);
-  if (Array.isArray(raw)) return averageVectors(raw);
-  return null;
+  let embedding;
+  if (raw?.[0]?.embedding && Array.isArray(raw[0].embedding)) {
+    embedding = raw[0].embedding;
+  } else if (raw?.[0] && Array.isArray(raw[0])) {
+    embedding = raw[0]; // batched: one vector per input text
+  } else if (Array.isArray(raw) && typeof raw[0] === "number") {
+    embedding = raw; // squeezed batch dimension: flat vector
+  } else if (raw?.data) {
+    try { embedding = Array.from(raw.data); } // raw Tensor ({ data, dims })
+    catch { return null; }
+  } else {
+    return null;
+  }
+  return averageVectors(embedding);
 };
 
 const averageVectors = (arrays) => {
@@ -147,7 +162,10 @@ const embed = async (input) => {
   if (text.length > MAX_EMBED_INPUT_CHARS) text = text.slice(0, MAX_EMBED_INPUT_CHARS);
   try {
     const engine = await loadEmbeddingEngine();
-    const result = await engine.run({ args: [text] });
+    const result = await engine.run({
+      args: [[text]],
+      options: { pooling: "mean", normalize: true },
+    });
     const pooled = poolEmbedding(result);
     return pooled ? l2Normalize(pooled) : null;
   } catch (e) {
@@ -247,6 +265,107 @@ const computeExistingGroupTabEmbeddings = async (workspaceId, rules, excludeTabs
     groupEmbeddings.set(label, embs);
   }
   return groupEmbeddings;
+};
+
+// ─── TIDY_FUSION: greedy clustering + smart-tab-topic naming ────────────────
+// Ported from tidy-tabs.uc.js:263-293 (clusterEmbeddings),
+// tidy-tabs.uc.js:539-600 (extractKeywords) and tidy-tabs.uc.js:603-644
+// (nameGroupWithSmartTabTopic). This is what turns leftover unmatched tabs
+// into NEW groups — without it Local AI can only file tabs into existing
+// rule groups and looks dead on fresh profiles.
+
+// Greedy single-pass clustering: seed a group per unused vector, absorb every
+// unused vector above threshold. Order-dependent but fast and predictable.
+const clusterEmbeddings = (vectors, threshold) => {
+  if (!Array.isArray(vectors) || vectors.length === 0 || typeof threshold !== "number") {
+    return [];
+  }
+  const groups = [];
+  const used = new Array(vectors.length).fill(false);
+  for (let i = 0; i < vectors.length; i++) {
+    if (used[i]) continue;
+    const group = [i];
+    used[i] = true;
+    for (let j = 0; j < vectors.length; j++) {
+      if (i !== j && !used[j] && cosineSimilarity(vectors[i], vectors[j]) > threshold) {
+        group.push(j);
+        used[j] = true;
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+};
+
+const TIDY_KEYWORD_STOPWORDS = new Set([
+  "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+  "her", "was", "one", "our", "out", "day", "get", "has", "him", "his",
+  "how", "man", "new", "now", "old", "see", "two", "way", "who", "boy",
+  "did", "its", "let", "put", "say", "she", "too", "use",
+]);
+
+const extractTidyKeywords = (titles) => {
+  const wordCount = {};
+  for (const w of titles.join(" ").toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2)) {
+    wordCount[w] = (wordCount[w] || 0) + 1;
+  }
+  return Object.entries(wordCount)
+    .filter(([word]) => !TIDY_KEYWORD_STOPWORDS.has(word))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => word);
+};
+
+let topicEnginePromise = null;
+
+const loadTopicEngine = () => {
+  if (topicEnginePromise) return topicEnginePromise;
+  topicEnginePromise = (async () => {
+    ensureMLEnginePref();
+    const { createEngine } = ChromeUtils.importESModule(
+      "chrome://global/content/ml/EngineProcess.sys.mjs"
+    );
+    return createEngine({
+      taskName: "text2text-generation",
+      modelId: "Mozilla/smart-tab-topic",
+      modelHub: "huggingface",
+      engineId: "group-namer",
+    });
+  })().catch((e) => {
+    topicEnginePromise = null; // allow retry on next click
+    throw e;
+  });
+  return topicEnginePromise;
+};
+
+// Name a fresh cluster with the bundled topic model; fall back to Wand's
+// hostname stitch when the model is unavailable or returns junk.
+const nameClusterWithTopic = async (members) => {
+  const titles = members.map((m) => m.title).filter(Boolean);
+  const fallback = () => nameClusterFromHostnames(members);
+  if (titles.length === 0) return fallback();
+  try {
+    const keywords = extractTidyKeywords(titles);
+    const input = `Topic from keywords: ${keywords.join(", ")}. titles:\n${titles.join("\n")}`;
+    const engine = await loadTopicEngine();
+    const aiResult = await engine.run({
+      args: [input],
+      options: { max_new_tokens: 8, temperature: 0.7 },
+    });
+    let name = (aiResult[0]?.generated_text || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l);
+    if (!name || /none|adult content/i.test(name)) return fallback();
+    name = titleCase(name)
+      .replace(/^['"`]+|['"`]+$/g, "")
+      .replace(/[.?!,:;]+$/, "")
+      .slice(0, 24);
+    return name || fallback();
+  } catch (e) {
+    console.warn(`${LOG} AI: topic naming failed, hostname fallback:`, e);
+    return fallback();
+  }
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -370,16 +489,34 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
     }
   }
 
-  // Local AI is intentionally limited to assigning into EXISTING groups only.
-  // New-cluster formation is opt-in via `runPass2Fresh` below — see its comment
-  // for the trade-offs (no LLM means no abstract names, and smart-tab-embedding
-  // clusters by stylistic title similarity rather than topic).
+  // TIDY_FUSION — cluster leftovers into NEW groups (Tidy behavior).
+  // Previously Local AI only filed tabs into existing rule groups and
+  // returned newGroups: [] — on profiles with few/no rule groups the wand
+  // click visibly did nothing. Remainder clusters use the Tidy bar
+  // (CONFIG.TIDY_LOW) and topic-model names; singletons stay skipped.
+  // applyPass2 honors the "New AI groups" pref (save-once/prompt/preview).
+  const newGroups = [];
+  const skipped = [...empty.skipped];
+  if (remainder.length >= 2) {
+    const idxGroups = clusterEmbeddings(
+      remainder.map((r) => r.embedding),
+      CONFIG.TIDY_LOW
+    );
+    for (const idx of idxGroups) {
+      if (idx.length < 2) {
+        idx.forEach((k) => skipped.push(remainder[k].info));
+        continue;
+      }
+      const members = idx.map((k) => remainder[k].info);
+      const name = await nameClusterWithTopic(members);
+      newGroups.push({ name, tabs: members });
+      console.log(`${LOG} AI: new cluster "${name}" (${members.length} tab(s))`);
+    }
+  } else {
+    remainder.forEach((r) => skipped.push(r.info));
+  }
 
-  return {
-    assignedToExisting,
-    newGroups: [],
-    skipped: [...empty.skipped, ...remainder.map((r) => r.info)],
-  };
+  return { assignedToExisting, newGroups, skipped };
 };
 
 // ─── Local Fresh: cluster-from-scratch into new groups ────────────────────────

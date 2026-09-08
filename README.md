@@ -199,6 +199,14 @@ Inside the settings panel under **Backup & Restore**:
 - The Ollama engine talks to `localhost:11434` (or whatever host you configured). Nothing goes to the internet from this mod.
 - The mod fetches `<meta name="description">` snippets from your open tab URLs (to give the AI better context). These fetches use your browser cookies and stay between your browser and the destination site — same as if you'd refreshed the tab.
 
+## Credits
+
+This fusion stands on two mods:
+
+- [Zen Tab Wand](https://github.com/flantig/Zen-Tab-Wand) by franklinl — rules engine, Ollama support, preview modal, settings UI. The fusion base.
+- [Zen Tidy Tabs](https://github.com/Vertex-Mods/Zen-Tidy-Tabs) by Vertex — proven Local-AI call shape, greedy clustering, smart-tab-topic naming, separator animations, ATG favicon colors.
+- [Advanced Tab Groups](https://github.com/Vertex-Mods/Advanced-Tab-Groups) by Vertex — group containers and favicon-color integration (auto-installed dependency).
+
 ## Reporting bugs
 
 Open an issue on the source repository. Helpful to include the **Browser Console** log (Ctrl+Shift+J) around the time of the bug — the mod logs detailed diagnostics with the prefix `[ZenTabWand]`.
