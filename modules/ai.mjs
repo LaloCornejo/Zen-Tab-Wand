@@ -199,28 +199,39 @@ const embed = async (input) => {
 // without yielding the browser tab can freeze for many seconds.
 //
 // Dead-engine recovery: if every entry in a chunk reports dead-port, we
-// invalidate the cached engine promise and retry the chunk ONCE. This handles
-// the common case where the user toggled engine prefs and the ML engine's
-// port closed — recreating loads a fresh engine. Limited to one retry per
-// batch to avoid infinite recreation loops when the engine genuinely won't
-// load.
+// drop the cached engine promise, wait for EngineProcess to respawn, and
+// retry — up to twice per batch. The old single immediate retry usually lost:
+// recreating back-to-back reuses a half-torn-down port, so the retry died the
+// same way. The 1.5s backoff gives the ML process room to come back.
+const EMBED_RECREATE_LIMIT = 2;
+const EMBED_RESPAWN_WAIT_MS = 1500;
+
+const resetEmbeddingEngine = async () => {
+  embeddingEnginePromise = null;
+  try {
+    await loadEmbeddingEngine();
+  } catch {}
+};
 const embedBatch = async (inputs, opts = {}) => {
   const batchSize = opts.batchSize ?? CONFIG.AI_EMBEDDING_BATCH_SIZE;
   const yieldBetween = !!opts.yieldBetween;
   const out = [];
-  let alreadyRecreated = false;
   for (let i = 0; i < inputs.length; i += batchSize) {
     const chunk = inputs.slice(i, i + batchSize);
     let results = await Promise.all(chunk.map(embed));
     // A genuinely dead engine yields SENTINEL for every input it touches. Inputs that buildEmbedText
     // rejected as empty come back as plain null. Treat the chunk as "dead-port suspected" when at
     // least one says SENTINEL and nothing succeeded.
-    const someDead = results.some((r) => r === DEAD_PORT_SENTINEL);
-    const allDeadOrNull = results.every((r) => r === DEAD_PORT_SENTINEL || r === null);
-    if (someDead && allDeadOrNull && !alreadyRecreated) {
-      console.warn(`${LOG} embedBatch: every embed reported "Port does not exist" — invalidating engine cache and retrying chunk`);
-      embeddingEnginePromise = null;
-      alreadyRecreated = true;
+    let recreations = 0;
+    while (
+      recreations < EMBED_RECREATE_LIMIT &&
+      results.some((r) => r === DEAD_PORT_SENTINEL) &&
+      results.every((r) => r === DEAD_PORT_SENTINEL || r === null)
+    ) {
+      recreations++;
+      console.warn(`${LOG} embedBatch: every embed reported "Port does not exist" — respawning engine (attempt ${recreations}/${EMBED_RECREATE_LIMIT})`);
+      await resetEmbeddingEngine();
+      await new Promise((resolve) => setTimeout(resolve, EMBED_RESPAWN_WAIT_MS));
       results = await Promise.all(chunk.map(embed));
     }
     // Normalize sentinels back to null so downstream code sees a clean
@@ -382,11 +393,11 @@ const loadTopicEngine = () => {
 export const warmupLocalEngines = () => {
   loadEmbeddingEngine().then(
     () => console.log(`${LOG} AI: local embedding engine warmed`),
-    () => {}
+    (e) => console.warn(`${LOG} AI: embedding warmup failed (click path retries anyway):`, e?.message || e)
   );
   loadTopicEngine().then(
     () => console.log(`${LOG} AI: topic engine warmed`),
-    () => {}
+    (e) => console.warn(`${LOG} AI: topic warmup failed (hostname fallback covers naming):`, e?.message || e)
   );
 };
 
@@ -526,6 +537,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   // Resolve a per-tab embedding. Without chunking, `tabEmbeddings[i]`.
   // With chunking, the embedding for the tab's hostname (one per hostname).
   let getEmbeddingForTab;
+  let firstPassEmbeddings = [];
 
   try {
     if (useChunking) {
@@ -548,18 +560,28 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
       reps.forEach((t, i) => {
         if (repEmbeddings[i]) hostToEmb.set(t.hostname, repEmbeddings[i]);
       });
+      firstPassEmbeddings = [...hostToEmb.values()];
       getEmbeddingForTab = (tabInfo) => hostToEmb.get(tabInfo.hostname);
     } else {
       const tabEmbeddings = await embedBatch(
         unmatched.map((t) => buildRichEmbedText(t.title, t.hostname, snippetByHostname)),
         { batchSize },
       );
+      firstPassEmbeddings = tabEmbeddings;
       getEmbeddingForTab = (_tabInfo, idx) => tabEmbeddings[idx];
     }
   } catch (e) {
     console.error(`${LOG} AI: failed to load embedding engine:`, e);
     showToast("AI sorting unavailable — embedding model failed to load");
     return { ...empty, failed: "embedding engine load failed" };
+  }
+
+  // Engine-dead visibility: retries exhausted and NOTHING embedded means the
+  // model wouldn't start — say so loudly instead of logging "nothing to
+  // group" as if the tabs were merely unmatchable.
+  if (unmatched.length > 0 && firstPassEmbeddings.length > 0 && firstPassEmbeddings.every((e) => !e)) {
+    showToast("Local AI engine unreachable — embedding model would not start");
+    return { ...empty, skipped: unmatched, failed: "embedding engine unreachable" };
   }
 
   // 2. Collect per-tab embeddings for existing rule-matched groups. Exclude the
