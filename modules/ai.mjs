@@ -749,6 +749,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
 const FRESH_CLUSTER_THRESHOLD = 0.55; // raw cosine — broader than existing-group matching
 const FRESH_MERGE_THRESHOLD = 0.40;   // 3rd-pass centroid-merge — looser than initial pairing
 const FRESH_MIN_CLUSTER_SIZE = 2;     // singletons demoted to skipped
+const FRESH_PLATFORM_SNIPPET_CAP = 50; // max per-tab page fetches for platform-host tabs (rest fall back to title-only)
 
 const etld1 = (hostname) => {
   if (!hostname) return "";
@@ -853,14 +854,14 @@ const parseTopicFromSnippet = (snippet) => {
 // Find words that recur across multiple distinct hostnames in the cluster.
 // Counting by HOSTNAME (not raw token frequency) prevents a chatty
 // single-site cluster from inflating its own brand into the cluster label.
-const extractClusterKeywords = (tabs, snippetByHostname) => {
+const extractClusterKeywords = (tabs, snippetByUrl) => {
   const tokensByHostname = new Map();
   for (const t of tabs) {
     // Skip hostless tabs so they don't bucket under the empty-string fake host
     // and inflate uniqueHosts (which would skew the minShare threshold).
     const hostname = t.hostname;
     if (!hostname) continue;
-    const topic = parseTopicFromSnippet(snippetByHostname.get(hostname));
+    const topic = parseTopicFromSnippet(snippetByUrl.get(t.url));
     const text = `${t.title || ""} ${topic}`;
     const tokens = new Set(tokenizeForKeywords(text));
     // Don't let a token win just because the brand IS the word (yugipedia
@@ -900,11 +901,11 @@ const titleCaseToken = (s) =>
 //   2. shared keyword(s) alone            → "Yu-Gi-Oh"
 //   3. intent label alone                 → "Reading"
 //   4. hostname stitch                    → "Github & Gitlab"
-const nameClusterFromSignals = (tabs, snippetByHostname) => {
+const nameClusterFromSignals = (tabs, snippetByUrl) => {
   // 1+3 — intent label from og:type majority
   const intentCounts = new Map();
   for (const t of tabs) {
-    const snip = snippetByHostname.get(t.hostname);
+    const snip = snippetByUrl.get(t.url);
     const ogType = parseOgTypeFromSnippet(snip);
     const intent = intentFromOgType(ogType);
     if (intent) intentCounts.set(intent, (intentCounts.get(intent) || 0) + 1);
@@ -916,7 +917,32 @@ const nameClusterFromSignals = (tabs, snippetByHostname) => {
     if (topCount >= Math.ceil(tabs.length / 2)) intentName = topIntent;
   }
   // 1+2 — keyword extraction from titles + [topic:] across distinct hostnames
-  const keywords = extractClusterKeywords(tabs, snippetByHostname);
+  let keywords = extractClusterKeywords(tabs, snippetByUrl);
+  if (keywords.length === 0) {
+    // Single-host clusters (e.g. all-youtube) can never share a word across
+    // hostnames, so the extractor above always comes back empty for them.
+    // Fall back to words recurring across the members' TITLES (in at least 2
+    // distinct tabs — a word repeated by one tab's title+snippet alone must
+    // not win) so a same-site cluster still names itself by topic instead of
+    // the bare intent label ("Watching"). Strip hostname-derived tokens so
+    // the brand can't win.
+    const hostnames = [...new Set(tabs.map((t) => t.hostname).filter(Boolean))];
+    if (hostnames.length <= 1) {
+      const brandTokens = hostnames.length === 1
+        ? new Set(tokenizeForKeywords(hostnames[0].replace(/\./g, " ")))
+        : new Set();
+      const tabCount = new Map();
+      for (const t of tabs) {
+        const toks = new Set(tokenizeForKeywords(`${t.title || ""} ${parseTopicFromSnippet(snippetByUrl.get(t.url))}`));
+        for (const w of toks) tabCount.set(w, (tabCount.get(w) || 0) + 1);
+      }
+      keywords = [...tabCount.entries()]
+        .filter(([w, n]) => n >= 2 && !brandTokens.has(w))
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([w]) => w);
+    }
+  }
   if (keywords.length > 0 && intentName) {
     return `${titleCaseToken(keywords[0])} ${intentName}`;
   }
@@ -939,87 +965,124 @@ export const runPass2Fresh = async (tabs) => {
   const empty = { assignedToExisting: [], newGroups: [], skipped: [] };
   if (!tabs || tabs.length === 0) return empty;
 
-  // Hostname-dedupe + chunked embed (same infra as runPass2's chunked path).
+  // Hostname-dedupe + chunked embed (same infra as runPass2's chunked path) —
+  // EXCEPT on multi-topic platform hosts (youtube.com, reddit.com, ...): one
+  // domain holds many unrelated topics, so sharing a single embedding would
+  // fuse every tab on that host into one cluster. Platform tabs embed
+  // individually (title + their own page snippet) so topics can split apart.
   const repByHostname = new Map();
+  const platformTabs = [];
   for (const t of tabs) {
-    if (t.hostname && !repByHostname.has(t.hostname)) repByHostname.set(t.hostname, t);
+    if (!t.hostname) continue;
+    if (isPlatformHost(t.hostname)) { platformTabs.push(t); continue; }
+    if (!repByHostname.has(t.hostname)) repByHostname.set(t.hostname, t);
   }
   const reps = [...repByHostname.values()];
   const useChunking = tabs.length > CONFIG.AI_LOCAL_CHUNK_THRESHOLD;
   const batchSize = useChunking ? getLocalAIBatchSize() : CONFIG.AI_EMBEDDING_BATCH_SIZE;
   console.log(
-    `${LOG} Local Fresh: ${tabs.length} tab(s) → ${reps.length} unique hostname(s), batchSize=${batchSize}, chunking=${useChunking}`
+    `${LOG} Local Fresh: ${tabs.length} tab(s) → ${reps.length} unique hostname(s) + ${platformTabs.length} platform tab(s), batchSize=${batchSize}, chunking=${useChunking}`
   );
 
-  // Fetch page snippets for each unique hostname so the embedding model has
-  // real page context — og:type, og:site_name, h1, description — not just the
-  // bare title. This is the same enriched signal block we feed to Ollama, and
-  // it produces noticeably better clusters on Local since the embedder gets
-  // semantic content beyond just the homepage-style title pattern.
-  // Bounded parallel: fetchPageSnippet has its own 3s timeout per request; we
-  // fire them all in parallel and let the slow ones drop to "" silently.
+  // Fetch page snippets so the embedding model has real page context —
+  // og:type, og:site_name, h1, description — not just the bare title. This is
+  // the same enriched signal block we feed to Ollama, and it produces
+  // noticeably better clusters on Local since the embedder gets semantic
+  // content beyond just the homepage-style title pattern.
+  // Snippets are keyed by tab URL (not hostname): platform tabs on the same
+  // host are different pages. Regular tabs sharing a hostname reuse their
+  // rep's snippet. Bounded parallel: fetchPageSnippet has its own 3s timeout
+  // per request; we fire them in parallel and let the slow ones drop to ""
+  // silently. Per-tab platform fetches are capped so a 200-video workspace
+  // doesn't fire 200 parallel page loads — past the cap, title-only context.
+  const fetchable = (url) => url.startsWith("http://") || url.startsWith("https://");
   const snippetT0 = performance.now();
-  const snippets = await Promise.all(reps.map((t) => {
+  const repSnippets = await Promise.all(reps.map((t) => {
     const url = t.url || "";
     // Only fetch the tab's actual http(s) URL. Non-http(s) tabs (about:*, chrome://, file://,
     // javascript:, data:, blob:) have no real-world snippet — falling back to a synthetic
     // https://hostname/ URL would fetch the wrong page (someone else's homepage).
-    if (!url.startsWith("http://") && !url.startsWith("https://")) return "";
+    if (!fetchable(url)) return "";
     return fetchPageSnippet(url);
   }));
-  const hitCount = snippets.filter((s) => s).length;
+  const snippetPlatformTabs = platformTabs.slice(0, FRESH_PLATFORM_SNIPPET_CAP);
+  const platformSnippets = await Promise.all(snippetPlatformTabs.map((t) => {
+    const url = t.url || "";
+    if (!fetchable(url)) return "";
+    return fetchPageSnippet(url);
+  }));
+  const hitCount = [...repSnippets, ...platformSnippets].filter((s) => s).length;
   console.log(
-    `${LOG} Local Fresh: fetched page snippets for ${hitCount}/${reps.length} tab(s) in ${Math.round(performance.now() - snippetT0)}ms`
+    `${LOG} Local Fresh: fetched page snippets for ${hitCount}/${reps.length + snippetPlatformTabs.length} tab(s) in ${Math.round(performance.now() - snippetT0)}ms`
   );
-  // Index by hostname so nameClusterFromSignals can look up og:type when
+  // Index by tab URL so nameClusterFromSignals can look up og:type when
   // picking an intent-style name later.
-  const snippetByHostname = new Map();
+  const snippetByUrl = new Map();
+  const repSnippetByHostname = new Map();
   reps.forEach((t, i) => {
-    if (snippets[i]) snippetByHostname.set(t.hostname, snippets[i]);
+    if (repSnippets[i]) {
+      if (t.url) snippetByUrl.set(t.url, repSnippets[i]);
+      repSnippetByHostname.set(t.hostname, repSnippets[i]);
+    }
+  });
+  for (const t of tabs) {
+    if (!t.url || snippetByUrl.has(t.url) || isPlatformHost(t.hostname)) continue;
+    const s = repSnippetByHostname.get(t.hostname);
+    if (s) snippetByUrl.set(t.url, s);
+  }
+  snippetPlatformTabs.forEach((t, i) => {
+    if (platformSnippets[i] && t.url) snippetByUrl.set(t.url, platformSnippets[i]);
   });
 
-  let hostToEmb;
+  // Clustering units: one per regular hostname (speaking for all its sibling
+  // tabs) + one per platform tab. The embed function accepts strings directly
+  // (bypassing the default {title, hostname} → "title (hostname)" formatter).
+  const units = [];
+  for (const [hostname, rep] of repByHostname) {
+    const members = tabs.filter((t) => t.hostname === hostname && !isPlatformHost(t.hostname));
+    if (members.length === 0) continue;
+    const parts = [];
+    if (rep.title) parts.push(rep.title);
+    if (hostname) parts.push(`(${hostname})`);
+    if (rep.url && snippetByUrl.get(rep.url)) parts.push(snippetByUrl.get(rep.url));
+    units.push({ tabs: members, text: parts.join(" ").trim() || hostname });
+  }
+  for (const t of platformTabs) {
+    const parts = [];
+    if (t.title) parts.push(t.title);
+    if (t.hostname) parts.push(`(${t.hostname})`);
+    if (t.url && snippetByUrl.get(t.url)) parts.push(snippetByUrl.get(t.url));
+    units.push({ tabs: [t], text: parts.join(" ").trim() || t.hostname || t.title || "" });
+  }
+
+  let live;
   try {
-    // Build a richer text input per representative: title + (hostname) +
-    // snippet. The embed function accepts strings directly (bypassing the
-    // default {title, hostname} → "title (hostname)" formatter).
-    const repInputs = reps.map((t, i) => {
-      const parts = [];
-      if (t.title) parts.push(t.title);
-      if (t.hostname) parts.push(`(${t.hostname})`);
-      if (snippets[i]) parts.push(snippets[i]);
-      return parts.join(" ").trim() || t.hostname || t.title || "";
-    });
-    const repEmbeddings = await embedBatch(repInputs, { batchSize, yieldBetween: useChunking });
-    hostToEmb = new Map();
-    reps.forEach((t, i) => {
-      if (repEmbeddings[i]) hostToEmb.set(t.hostname, repEmbeddings[i]);
-    });
+    const unitEmbeddings = await embedBatch(units.map((u) => u.text), { batchSize, yieldBetween: useChunking });
+    // Drop units whose embedding failed — their tabs fall through to skipped
+    // via the coverage check at bucketing time.
+    live = units.map((unit, i) => ({ unit, emb: unitEmbeddings[i] })).filter((x) => x.emb);
   } catch (e) {
     console.error(`${LOG} Local Fresh: embedding engine failed:`, e);
     showToast("Local clustering unavailable — embedding model failed to load");
     return { ...empty, skipped: tabs, failed: "embedding engine load failed" };
   }
 
-  // Union-find over UNIQUE hostnames (same hostname always clusters together
-  // since they share an embedding — no point comparing per-tab).
-  const hostnames = [...hostToEmb.keys()];
-  const parent = Array.from({ length: hostnames.length }, (_, i) => i);
+  // Union-find over clustering units. Regular hostnames still cluster as one
+  // (their tabs share the unit embedding); platform tabs compare per-tab, so
+  // same-host tabs with different topics land in different clusters.
+  const parent = Array.from({ length: live.length }, (_, i) => i);
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const union = (i, j) => { parent[find(i)] = find(j); };
 
-  for (let i = 0; i < hostnames.length; i++) {
-    const a = hostToEmb.get(hostnames[i]);
-    for (let j = i + 1; j < hostnames.length; j++) {
-      const b = hostToEmb.get(hostnames[j]);
+  for (let i = 0; i < live.length; i++) {
+    const a = live[i].emb;
+    for (let j = i + 1; j < live.length; j++) {
+      const b = live[j].emb;
       if (cosineSimilarity(a, b) >= FRESH_CLUSTER_THRESHOLD) union(i, j);
     }
   }
 
-  const hostnameToCluster = new Map();
-  for (let i = 0; i < hostnames.length; i++) {
-    hostnameToCluster.set(hostnames[i], find(i));
-  }
+  const clusterOfUnit = live.map((_, i) => find(i));
 
   // ── 3rd pass: centroid-similarity merge ─────────────────────────────────────
   // After the tight per-pair clustering, over-fragmented clusters often have
@@ -1028,15 +1091,15 @@ export const runPass2Fresh = async (tabs) => {
   // We compute a centroid per cluster and merge cluster pairs whose centroids
   // hit a looser threshold. This is hierarchical-clustering-lite without the
   // bookkeeping cost of true single-linkage on every iteration.
-  const groupHostnamesByCluster = new Map(); // clusterId → [hostname, ...]
-  for (let i = 0; i < hostnames.length; i++) {
-    const cid = find(i);
-    if (!groupHostnamesByCluster.has(cid)) groupHostnamesByCluster.set(cid, []);
-    groupHostnamesByCluster.get(cid).push(hostnames[i]);
+  const groupUnitsByCluster = new Map(); // clusterId → [unitIdx, ...]
+  for (let i = 0; i < live.length; i++) {
+    const cid = clusterOfUnit[i];
+    if (!groupUnitsByCluster.has(cid)) groupUnitsByCluster.set(cid, []);
+    groupUnitsByCluster.get(cid).push(i);
   }
   const centroids = new Map();
-  for (const [cid, hosts] of groupHostnamesByCluster) {
-    const embs = hosts.map((h) => hostToEmb.get(h)).filter(Boolean);
+  for (const [cid, idxs] of groupUnitsByCluster) {
+    const embs = idxs.map((i) => live[i].emb);
     if (embs.length === 0) continue;
     const avg = averageVectors(embs);
     if (avg) centroids.set(cid, l2Normalize(avg));
@@ -1068,23 +1131,23 @@ export const runPass2Fresh = async (tabs) => {
   }
   if (mergedPairs > 0) {
     console.log(`${LOG} Local Fresh: merge pass linked ${mergedPairs} cluster pair(s) at centroid-sim ≥ ${FRESH_MERGE_THRESHOLD}`);
-    // Re-apply merge to hostname→cluster mapping
-    for (const h of hostnameToCluster.keys()) {
-      const oldCid = hostnameToCluster.get(h);
-      hostnameToCluster.set(h, findM(oldCid));
+    // Re-apply merge to the unit→cluster mapping
+    for (let i = 0; i < clusterOfUnit.length; i++) {
+      clusterOfUnit[i] = findM(clusterOfUnit[i]);
     }
   }
 
-  // Bucket every input tab into its cluster (or skip if its hostname had no
-  // embedding — e.g. about:* tabs).
+  // Bucket every input tab into its unit's cluster. Tabs with no live unit
+  // (hostless tabs, failed embeddings) aren't covered and fall to skipped.
   const clusters = new Map();
-  const skipped = [];
-  for (const t of tabs) {
-    const cid = hostnameToCluster.get(t.hostname);
-    if (cid === undefined) { skipped.push(t); continue; }
+  for (let i = 0; i < live.length; i++) {
+    const cid = clusterOfUnit[i];
     if (!clusters.has(cid)) clusters.set(cid, []);
-    clusters.get(cid).push(t);
+    clusters.get(cid).push(...live[i].unit.tabs);
   }
+  const covered = new Set();
+  for (const members of clusters.values()) for (const t of members) covered.add(t);
+  const skipped = tabs.filter((t) => !covered.has(t));
 
   // Demote singletons to skipped; everything else becomes a new group.
   const rawGroups = [];
@@ -1092,7 +1155,7 @@ export const runPass2Fresh = async (tabs) => {
     if (members.length < FRESH_MIN_CLUSTER_SIZE) {
       skipped.push(...members);
     } else {
-      rawGroups.push({ name: nameClusterFromSignals(members, snippetByHostname), tabs: members });
+      rawGroups.push({ name: nameClusterFromSignals(members, snippetByUrl), tabs: members });
     }
   }
 

@@ -78,6 +78,9 @@ unmatched tabs (from runPass1)
 
 Local Fresh Rebuild uses title + hostname + fetched page snippet text as transient clustering input. It never persists `titleTerms`; title persistence is Ollama-only and reviewed in the preview modal as separate title-rule proposals.
 
+### Platform hosts (youtube.com, reddit.com, …)
+
+One domain can hold many unrelated topics, so Fresh treats `PLATFORM_HOSTS` (`config.mjs`) specially: tabs on those hosts embed **individually** (own title + own page snippet, snippet fetches capped at 50) instead of sharing one per-hostname embedding, letting same-site tabs split into topic clusters. Naming also falls back to words recurring across member **titles** (in ≥2 distinct tabs) for single-host clusters, so an all-YouTube cluster becomes e.g. `Python Watching` instead of the bare intent label `Watching`.
 When the modal is applied, `applyPass2()` treats reviewed title proposals as rule patches: existing rules get deduped `titleTerms[]`, and new title-only rules can be created with empty `domains[]`. Skipped title cards and individually skipped title chips are ignored.
 
 ### `ai-new-group-behavior`
