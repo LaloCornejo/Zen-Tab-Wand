@@ -20,6 +20,14 @@ The function the toolbar button invokes. Sequences all the passes.
 6.  skip-domain parking               — tabs matching the skip list are moved
                                         to the top via moveTabsToTop, excluded
                                         from the rest of the pipeline
+6b. takeSnapshot(allTabs)               — snapshot pre-tidy membership so
+                                        "Undo last tidy" can restore it
+6c. parkDustyTabs(tabs, ws, rules)      — opt-in Automation: stale tabs collect
+                                        into the Dusty group, leave the pipeline
+6d. closeDuplicateTabs(tabs)            — when the close-duplicates pref is on
+                                        (default), tabs sharing a normalized URL
+                                        are repeats: keep one copy (selected
+                                        tab wins, else first), close the rest
 7.  runPass1(tabs, rules)             — plan moves for non-skipped tabs
 8.  console.groupCollapsed(...)       — dry-run logging
 9.  applyPass1(byGroup, ws, rules)    — execute moves (skipped in fresh-like AI modes)
@@ -33,6 +41,9 @@ The function the toolbar button invokes. Sequences all the passes.
        "local"  → ai.mjs runPass2()       (existing groups or simple new groups)
        "ollama" → ollama.mjs runPass2Ollama() OR runPass2OllamaFresh()
                   depending on ai-new-group-behavior
+       Stickiness (both engines, non-fresh modes): tabs already inside a
+       group are kept out of brand-new AI groups UNLESS the resort-grouped
+       pref is on (default) — moves into EXISTING groups are always allowed.
 14. Preview gate (if applicable):
        Preview Only always opens showPreviewModal(plan). Ollama rule-mutating
        flows (Move + Save Domain existing rules and/or Preview + Save Rule new rules) also open it

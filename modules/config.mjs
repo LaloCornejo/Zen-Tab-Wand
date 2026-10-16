@@ -51,6 +51,8 @@ export const CONFIG = {
   COLLAPSED_GROUPS_PREF: "extensions.zen-auto-organize.collapsed-groups-json",
   MINIMAL_STYLE_PREF: "extensions.zen-auto-organize.minimal-style",
   STRICT_RULES_PREF: "extensions.zen-auto-organize.strict-rules",
+  CLOSE_DUPLICATES_PREF: "extensions.zen-auto-organize.close-duplicates",
+  RESORT_GROUPED_PREF: "extensions.zen-auto-organize.resort-grouped",
   MATCH_MODE_PREF: "extensions.zen-auto-organize.match-mode",
   GRADIENT_STYLE_PREF: "extensions.zen-auto-organize.gradient-style",
 
@@ -82,6 +84,10 @@ export const CONFIG = {
   AI_EMBEDDING_BATCH_SIZE: 5,           // tabs per parallel embedding batch (small-workspace default)
   TIDY_LOW: 0.45,                       // greedy new-cluster bar (Tidy SIMILARITY_THRESHOLD)
   TIDY_HIGH: 0.65,                      // existing-group bar reference (Tidy GROUP_SIMILARITY_THRESHOLD; merge bar = ×0.9)
+  // TIDY_FUSION — Tidy donor gating + pref names for the animation/ATG grafts.
+  TIDY_MIN_TABS_FOR_SORT: 6,            // Tidy MIN_TABS_FOR_SORT (button visibility gate)
+  TIDY_ANIMATIONS_PREF: "extensions.zen-auto-organize.tidy-animations",
+  TIDY_ATG_COLORS_PREF: "extensions.zen-auto-organize.tidy-atg-colors",
 
   // Local-AI chunking. When the count of unmatched tabs to embed exceeds the
   // chunking threshold, the engine switches to a more conservative pipeline:

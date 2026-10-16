@@ -1328,3 +1328,122 @@ dialog.zao-warning-dialog::backdrop {
 @keyframes zao-spin {
   to { transform: rotate(360deg); }
 }
+/* TIDY_FUSION — separator wave SVG, wand/sort buttons, brush + pulse animations.
+   Ported verbatim from Tidy userChrome.css B8/C1/C2; #sort-button selectors are
+   kept working AND mirrored to #tab-wand-button so both entry scripts style up. */
+
+@keyframes brush-sweep {
+  0% { transform: rotate(0deg); }
+  20% { transform: rotate(-15deg); }
+  40% { transform: rotate(15deg); }
+  60% { transform: rotate(-15deg); }
+  80% { transform: rotate(15deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes loading-pulse-tab {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.tab-is-sorting {
+  & .tab-icon-image,
+  & .tab-label {
+    animation: loading-pulse-tab 1.5s ease-in-out infinite;
+    will-change: opacity;
+  }
+}
+
+.pinned-tabs-container-separator {
+  overflow: visible !important;
+
+  & svg.separator-line-svg {
+    width: 100% !important;
+    height: 1px;
+    min-height: 1px !important;
+    display: block;
+    overflow: visible;
+    transition: width 0.15s ease-in-out;
+    min-width: 0;
+    margin: auto 4px !important;
+    flex-grow: 1;
+  }
+
+  & #sort-button,
+  & #tab-wand-button {
+    appearance: none !important;
+    opacity: 0;
+    visibility: collapse;
+    transition: opacity 0.15s, visibility 0.15s;
+    font-size: 10px !important;
+    font-weight: 500;
+    gap: 2px;
+    flex-shrink: 0;
+    min-width: 0;
+    overflow: hidden;
+    pointer-events: none;
+    margin: 0 !important;
+    padding: 0 !important;
+    white-space: nowrap;
+    -moz-context-properties: fill, fill-opacity !important;
+    fill: currentColor !important;
+
+    & .broom-icon {
+      width: 10px !important;
+      height: 10px !important;
+      transition: transform 0.15s ease-in-out;
+      transform: translateY(0px);
+      fill: currentColor !important;
+    }
+
+    & .broom-icon path {
+      fill: currentColor !important;
+    }
+
+    &:active:hover .broom-icon {
+      transform: translateY(2px);
+    }
+
+    &.brushing .broom-icon,
+    &.brushing svg {
+      animation: brush-sweep 0.8s ease-in-out;
+      transform-origin: 50% 50%;
+    }
+
+    #navigator-toolbox[zen-has-implicit-hover="true"] & {
+      visibility: visible;
+      opacity: 0.5;
+    }
+
+    &:hover {
+      opacity: 1 !important;
+    }
+
+    :root:not([zen-sidebar-expanded="true"]) & {
+      display: none;
+    }
+
+    &.hidden-button {
+      display: none !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+  }
+
+  &:hover {
+    & #sort-button,
+    & #tab-wand-button {
+      visibility: visible;
+      opacity: 0.5;
+      pointer-events: auto;
+      cursor: pointer !important;
+    }
+
+    & #sort-button:hover,
+    & #tab-wand-button:hover {
+      opacity: 1 !important;
+    }
+  }
+}

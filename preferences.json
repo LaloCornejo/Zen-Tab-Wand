@@ -31,6 +31,18 @@
     "defaultValue": false
   },
   {
+    "type": "checkbox",
+    "label": "Close duplicate tabs — keep one copy of each repeated URL and close the rest on every tidy click",
+    "property": "extensions.zen-auto-organize.close-duplicates",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Re-sort grouped tabs — allow tabs already inside a group to move into newly created AI groups",
+    "property": "extensions.zen-auto-organize.resort-grouped",
+    "defaultValue": true
+  },
+  {
     "type": "dropdown",
     "label": "Rule matching priority — choose whether URL/domain matches or title matches are checked first",
     "property": "extensions.zen-auto-organize.match-mode",
@@ -61,6 +73,25 @@
   {
     "type": "separator",
     "label": "AI Sorting"
+  },
+  {
+    "type": "checkbox",
+    "label": "Enable local AI engine (Tidy fusion)",
+    "property": "browser.ml.enable",
+    "force": true,
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Tidy animations — separator wave sweep and failure pulse on sort (Tidy fusion)",
+    "property": "extensions.zen-auto-organize.tidy-animations",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "ATG favicon colors — use Advanced Tab Groups favicon color when available (Tidy fusion)",
+    "property": "extensions.zen-auto-organize.tidy-atg-colors",
+    "defaultValue": true
   },
   {
     "type": "dropdown",

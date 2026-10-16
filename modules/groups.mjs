@@ -88,6 +88,20 @@ export const collapseGroup = (groupEl) => {
 export const applyGroupColor = (groupEl, color) => {
   if (!groupEl?.isConnected || !color) return;
 
+  // TIDY_FUSION ATG hook — prefer Advanced Tab Groups favicon color when the
+  // tidy-atg-colors pref is true and the ATG method exists (tidy D1-D4 pattern).
+  // Falls through to Wand logic otherwise / on any error.
+  try {
+    if (Services.prefs.getBoolPref(CONFIG.TIDY_ATG_COLORS_PREF, true)) {
+      if (typeof groupEl._useFaviconColor === "function") {
+        try {
+          groupEl._useFaviconColor();
+        } catch {}
+        return;
+      }
+    }
+  } catch {}
+
   if (isZenColorName(color)) {
     try {
       groupEl.style.removeProperty("--tab-group-color");
@@ -519,4 +533,75 @@ export const consolidateDuplicateGroups = (workspaceId) => {
   }
 
   return { mergedLabels, tabsMoved: totalTabsMoved };
+};
+
+// Normalize a tab URL for duplicate detection: lowercase the host, strip a
+// leading www., drop the hash fragment. Query strings are significant —
+// different query = different page. Returns "" for non-http(s) URLs, which
+// are never treated as duplicates (about:*, chrome://, data:, ...).
+export const normalizeUrlForDedupe = (url) => {
+  if (!url || typeof url !== "string") return "";
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return "";
+  try {
+    const u = new URL(trimmed);
+    u.hash = "";
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
+    return u.toString();
+  } catch {
+    return trimmed;
+  }
+};
+
+/**
+ * Close repeated tabs: tab-info objects sharing a normalized URL are
+ * duplicates. Keeps one copy per URL — the selected tab when it's among the
+ * copies, else the first in input order — and closes the rest via
+ * gBrowser.removeTab. Pinned tabs never reach here (getEligibleTabs filters
+ * them out); non-http(s) tabs are skipped.
+ *
+ * @param {Array} tabInfos — tab info objects from getEligibleTabs().tabs
+ * @returns {{ closed, closedTabs }} where:
+ *   closed     — number of tabs closed
+ *   closedTabs — tab-info objects removed, so the caller can filter them out
+ *                of downstream planning arrays
+ */
+export const closeDuplicateTabs = (tabInfos) => {
+  if (!Array.isArray(tabInfos) || tabInfos.length < 2) return { closed: 0, closedTabs: [] };
+
+  const byUrl = new Map();
+  for (const info of tabInfos) {
+    const key = normalizeUrlForDedupe(info?.url);
+    if (!key) continue;
+    if (!byUrl.has(key)) byUrl.set(key, []);
+    byUrl.get(key).push(info);
+  }
+
+  let closed = 0;
+  const closedTabs = [];
+  for (const copies of byUrl.values()) {
+    if (copies.length < 2) continue;
+    const selectedIdx = copies.findIndex(
+      (c) => c?._tab?.selected === true || c?._tab?.hasAttribute?.("selected")
+    );
+    const keepIdx = selectedIdx >= 0 ? selectedIdx : 0;
+    copies.forEach((c, i) => {
+      if (i === keepIdx) return;
+      const tab = c?._tab;
+      if (!tab?.isConnected) return;
+      try {
+        if (typeof gBrowser?.removeTab === "function") {
+          gBrowser.removeTab(tab, { animate: false });
+        } else {
+          tab.remove();
+        }
+        closed++;
+        closedTabs.push(c);
+      } catch (e) {
+        console.error(`${LOG} error closing duplicate tab "${c?.url}":`, e);
+      }
+    });
+  }
+
+  return { closed, closedTabs };
 };

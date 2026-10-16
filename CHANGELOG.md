@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Close duplicate tabs.** The tidy click now closes repeated tabs sharing a normalized URL (fragment dropped, host lowercased, `www.` stripped). Keeps one copy — the selected tab when it's among the repeats, else the first — and closes the rest. Non-http(s) tabs and pinned tabs are never touched. Toggle via the Look & Feel "Close duplicate tabs" checkbox (default on). Complements the wand right-click menu's manual duplicate cleanup.
+- **Re-sort grouped tabs.** AI Pass 2 may now move tabs that already live inside a group into brand-new AI-invented groups. Both engines share one stickiness helper gated by the Look & Feel "Re-sort grouped tabs" checkbox (default on). Moves into existing groups were and remain always allowed; Fresh Rebuild / Preview Only modes always re-sort everything by design.
+- **Tidy fusion grafts.** Separator wave + failure-pulse animations with brush-sweep wand trigger (toggle via AI Sorting "Tidy animations"), Advanced Tab Groups favicon colors (toggle via "ATG favicon colors", auto-installed via `theme.json` modules), and wand-button visibility gating on a 6-tab minimum.
+
 ## 1.0.2 — 2026-06-01
 
 ### Added

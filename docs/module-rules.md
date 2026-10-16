@@ -13,6 +13,8 @@ All read/write access to the rules pref + the file fallback. Cleans malformed in
 | `loadRules()` | async `Rule[]` | Precedence: pref → rules.json file → `DEFAULT_RULES`. |
 | `isMinimalStyle()` | bool | Reads the `minimal-style` pref. |
 | `isStrictRulesEnforced()` | bool | Reads the `strict-rules` pref (default false). When on, click-handler ejects tabs that do not match their current group under the active match mode. |
+| `isCloseDuplicatesEnabled()` | bool | Reads the `close-duplicates` pref (default true). When on, click-handler closes repeated tabs sharing a normalized URL. |
+| `isResortGroupedEnabled()` | bool | Reads the `resort-grouped` pref (default true). When on, AI Pass 2 may move already-grouped tabs into brand-new groups; when off, grouped tabs only move into existing groups. |
 | `getMatchMode()` | `"url-only" \| "title-only" \| "url-then-title" \| "title-then-url"` | Reads the global URL/title matching priority. Unknown values fall back to `"url-then-title"`. |
 | `getGradientStyle()` | string | Reads the global two-color gradient style. Unknown values fall back to `"left-right"`. |
 | `readSkipDomainsPref()` | `string[]` | Reads the JSON skip-domains pref. Returns `[]` if unset. |
