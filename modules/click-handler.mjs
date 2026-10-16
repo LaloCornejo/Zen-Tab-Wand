@@ -1,15 +1,17 @@
 // Zen Tab Wand — tidy-button click orchestrator.
 // Sequences: wiggle → consolidate → load rules → dissolve stale → enumerate tabs
-//            → Pass 1 → apply → ungrouped-to-top → sync colors.
+//            → skip-domain parking → close duplicates → Pass 1 → apply
+//            → ungrouped-to-top → sync colors.
 
 import { CONFIG, LOG, BUILD_VERSION } from "./config.mjs";
 // (CONFIG is used inside the click pipeline for thresholds, pref names, and DOM ids.)
-import { loadRules, readSkipDomainsPref, isMinimalStyle, isStrictRulesEnforced, getAIEngine, getOllamaHost, getOllamaModel, getAINewGroupBehavior, getAIExistingBehavior, getAITitleLearning } from "./rules.mjs";
+import { loadRules, readSkipDomainsPref, isMinimalStyle, isStrictRulesEnforced, isCloseDuplicatesEnabled, isResortGroupedEnabled, getAIEngine, getOllamaHost, getOllamaModel, getAINewGroupBehavior, getAIExistingBehavior, getAITitleLearning } from "./rules.mjs";
 import { getEligibleTabs } from "./tabs.mjs";
 import {
   consolidateDuplicateGroups,
   dissolveStaleGroups,
   dissolveEmptyGroups,
+  closeDuplicateTabs,
   moveTabsToTop,
   moveUngroupedToTop,
   syncAllGroupColors,
@@ -69,6 +71,34 @@ const setButtonThinking = (thinking) => {
   } catch (e) {
     console.error(`${LOG} setButtonThinking error:`, e);
   }
+};
+
+// Stickiness for rule-considering modes: don't let the AI pull a tab OUT of
+// a user-organized group INTO a brand-new AI-invented category. Moves into an
+// EXISTING group are always allowed (that's the wand correcting wrong
+// placement). Gated by the resort-grouped pref — when re-sorting is allowed,
+// this function is never called and grouped tabs flow into new groups freely.
+// Uses the live DOM (not the stale currentGroup snapshot) to decide grouping.
+// Mutates pass2.newGroups / pass2.skipped in place; returns displaced tab infos.
+const enforceGroupedStickiness = (pass2) => {
+  const displaced = [];
+  if (!pass2?.newGroups?.length) return displaced;
+  for (const g of pass2.newGroups) {
+    const stays = [];
+    for (const t of g.tabs) {
+      const liveGrouped = t?._tab?.isConnected
+        ? !!t._tab.closest("tab-group")
+        : !!t?.currentGroup;
+      if (liveGrouped) displaced.push(t);
+      else stays.push(t);
+    }
+    g.tabs = stays;
+  }
+  pass2.newGroups = pass2.newGroups.filter((g) => g.tabs.length > 0);
+  if (displaced.length > 0) {
+    pass2.skipped = [...(pass2.skipped || []), ...displaced];
+  }
+  return displaced;
 };
 
 // Convert (currentGroup, targetGroup) into a single-word description of what
@@ -133,6 +163,23 @@ export const handleOrganizeClick = async () => {
   }
   if (tabs.length === 0) {
     console.log(`${LOG} no non-skipped eligible tabs in workspace ${workspaceId}`);
+    return;
+  }
+
+  // 4c. Close duplicate tabs. Tabs sharing a normalized URL are repeats — keep
+  // one copy (the selected tab when it's among the copies, else the first) and
+  // close the rest. Closed tabs are filtered out so Pass 1 + Pass 2 never see
+  // them. Gated by the close-duplicates pref (default on).
+  if (isCloseDuplicatesEnabled()) {
+    const dups = closeDuplicateTabs(tabs);
+    if (dups.closed > 0) {
+      console.log(`${LOG} closed ${dups.closed} duplicate tab(s)`);
+      const closedSet = new Set(dups.closedTabs);
+      tabs = tabs.filter((t) => !closedSet.has(t));
+    }
+  }
+  if (tabs.length === 0) {
+    console.log(`${LOG} no tabs left after duplicate cleanup in workspace ${workspaceId}`);
     return;
   }
 
@@ -277,24 +324,16 @@ export const handleOrganizeClick = async () => {
               // AI-invented category. Reclassifying into an EXISTING group
               // (assignedToExisting) is still allowed — that's the wand
               // correcting wrong placement. Fresh / identify-only opt out
-              // of this by design (those modes are full re-orgs).
-              if (pass2.newGroups?.length) {
-                const displaced = [];
-                for (const g of pass2.newGroups) {
-                  const stays = [];
-                  for (const t of g.tabs) {
-                    if (t.currentGroup) displaced.push(t);
-                    else stays.push(t);
-                  }
-                  g.tabs = stays;
-                }
-                pass2.newGroups = pass2.newGroups.filter((g) => g.tabs.length > 0);
+              // of this by design (those modes are full re-orgs). The
+              // resort-grouped pref opts out too — when re-sorting is
+              // allowed, grouped tabs flow into new groups freely.
+              if (pass2.newGroups?.length && !isResortGroupedEnabled()) {
+                const displaced = enforceGroupedStickiness(pass2);
                 if (displaced.length > 0) {
                   console.log(
                     `${LOG} stickiness: kept ${displaced.length} already-grouped tab(s) in place rather than moving to new AI group(s):`,
                     displaced.map((t) => `${t.hostname} (in "${t.currentGroup}")`)
                   );
-                  pass2.skipped = [...(pass2.skipped || []), ...displaced];
                 }
               }
             }
@@ -332,6 +371,19 @@ export const handleOrganizeClick = async () => {
               pass2 = await runPass2Fresh(tabs);
             } else {
               pass2 = await runPass2(unmatched, rules, workspaceId);
+              // Same stickiness contract as the Ollama path above, gated by
+              // the same resort-grouped pref so both engines behave alike:
+              // already-grouped tabs only enter brand-new groups when
+              // re-sorting is allowed.
+              if (pass2.newGroups?.length && !isResortGroupedEnabled()) {
+                const displaced = enforceGroupedStickiness(pass2);
+                if (displaced.length > 0) {
+                  console.log(
+                    `${LOG} stickiness: kept ${displaced.length} already-grouped tab(s) in place rather than moving to new AI group(s):`,
+                    displaced.map((t) => `${t.hostname} (in "${t.currentGroup}")`)
+                  );
+                }
+              }
             }
           }
         }

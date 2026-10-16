@@ -31,6 +31,18 @@
     "defaultValue": false
   },
   {
+    "type": "checkbox",
+    "label": "Close duplicate tabs — keep one copy of each repeated URL and close the rest on every tidy click",
+    "property": "extensions.zen-auto-organize.close-duplicates",
+    "defaultValue": true
+  },
+  {
+    "type": "checkbox",
+    "label": "Re-sort grouped tabs — allow tabs already inside a group to move into newly created AI groups",
+    "property": "extensions.zen-auto-organize.resort-grouped",
+    "defaultValue": true
+  },
+  {
     "type": "dropdown",
     "label": "Rule matching priority — choose whether URL/domain matches or title matches are checked first",
     "property": "extensions.zen-auto-organize.match-mode",

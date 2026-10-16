@@ -14,6 +14,8 @@ Everything that pokes at `<tab-group>` elements: lookup, color application, diss
 | `syncAllGroupColors(workspaceId, rules, root = document)` | Walks every rule-matched group in the workspace/root and either applies its rule appearance or toggles `.zao-minimal` (when minimal-style pref is on). |
 | `moveUngroupedToTop(workspaceId)` | Pushes any remaining ungrouped tab to the top of the workspace's `tabsContainer`, preserving relative DOM order. |
 | `dissolveStaleGroups(workspaceId, rules)` | Moves tabs out of any group whose label isn't in the rules, then removes the empty group. Runs BEFORE Pass 1. |
+| `normalizeUrlForDedupe(url)` | Normalizes an http(s) URL for repeat detection (lowercased host, no `www.`, no fragment). Returns `""` for non-http(s) URLs, which are never duplicates. |
+| `closeDuplicateTabs(tabInfos)` | Closes repeated tabs sharing a normalized URL (keeps the selected copy, else the first). Returns `{ closed, closedTabs }` so the caller can filter closed infos out of downstream planning. |
 | `consolidateDuplicateGroups(workspaceId)` | Merges multiple groups sharing a label into the first; removes the empty duplicates. Runs FIRST so `findExistingGroup` sees a deduplicated state. |
 
 ## Named vs hex color application

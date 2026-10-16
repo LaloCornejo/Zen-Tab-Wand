@@ -203,6 +203,29 @@ export const isStrictRulesEnforced = () => {
   }
 };
 
+// When ON (default), the tidy click closes repeated tabs — tabs sharing a
+// normalized URL (fragment dropped, host lowercased) are duplicates; one copy
+// is kept (the selected tab when it's among the copies, else the first) and
+// the rest are closed via gBrowser.removeTab.
+export const isCloseDuplicatesEnabled = () => {
+  try {
+    return Services.prefs.getBoolPref(CONFIG.CLOSE_DUPLICATES_PREF, true);
+  } catch {
+    return true;
+  }
+};
+
+// When ON (default), AI Pass 2 may move tabs that already live inside a group
+// into brand-new AI-invented groups. When OFF, already-grouped tabs stay put
+// unless AI files them into another EXISTING group (the "stickiness" rule).
+export const isResortGroupedEnabled = () => {
+  try {
+    return Services.prefs.getBoolPref(CONFIG.RESORT_GROUPED_PREF, true);
+  } catch {
+    return true;
+  }
+};
+
 export const getMatchMode = () => {
   try {
     const mode = Services.prefs.getStringPref(CONFIG.MATCH_MODE_PREF, "url-then-title");
