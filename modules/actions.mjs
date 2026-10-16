@@ -2,13 +2,17 @@
 //
 // Undo snapshots group membership BEFORE a tidy run and restores it on
 // demand (membership only — tab order within the window is not restored).
-// Snapshots are single-slot (last run wins) and in-memory only.
+// Tabs closed mid-run (pipeline duplicate cleanup) are reopened from the
+// snapshot URL, since regrouping alone can't bring them back. Snapshots are
+// single-slot (last run wins) and in-memory only.
 
 import { CONFIG, LOG } from "./config.mjs";
 import {
   findExistingGroup,
   findSafeInsertAnchor,
   moveTabsToTop,
+  normalizeUrlForDedupe,
+  chooseDupeKeeper,
   syncAllGroupColors,
 } from "./groups.mjs";
 import { loadRules, writeRulesPref, getDustyDays } from "./rules.mjs";
@@ -17,8 +21,15 @@ import { showToast } from "./ui-toast.mjs";
 
 let lastSnapshot = null; // [{ tab, url, title, group, index }] | null
 
+// Tabs closed mid-run (pipeline duplicate cleanup) can't be re-grouped —
+// reopen them from the snapshot URL instead. Capped so a pathological run
+// can't spawn a tab storm.
+const UNDO_REOPEN_CAP = 25;
+const isReopenableUrl = (url) => /^https?:\/\//i.test(String(url || "").trim());
+
 export const hasUndoSnapshot = () =>
-  Array.isArray(lastSnapshot) && lastSnapshot.some((s) => s.tab?.isConnected);
+  Array.isArray(lastSnapshot) &&
+  lastSnapshot.some((s) => s.tab?.isConnected || isReopenableUrl(s.url));
 
 export const takeSnapshot = (tabs) => {
   lastSnapshot = (tabs || []).map((t, i) => ({
@@ -60,6 +71,33 @@ export const undoLastTidy = async (workspaceId) => {
       console.error(`${LOG} undo failed for "${s.title}":`, e);
     }
   }
+  // Reopen tabs that died mid-run (pipeline duplicate cleanup closed them
+  // after the snapshot was taken). They reopen ungrouped unless the snapshot
+  // says they lived in a group, in which case they rejoin (or recreate) it.
+  let reopened = 0;
+  const dead = lastSnapshot.filter((s) => !s.tab?.isConnected && isReopenableUrl(s.url));
+  for (const s of dead.slice(0, UNDO_REOPEN_CAP)) {
+    try {
+      const newTab = gBrowser.addTab(s.url, {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      if (!newTab?.isConnected) continue;
+      if (s.group) {
+        const groupEl = findExistingGroup(s.group, workspaceId);
+        if (!groupEl?.isConnected) {
+          gBrowser.addTabGroup([newTab], {
+            label: s.group,
+            insertBefore: findSafeInsertAnchor(),
+          });
+        } else if (newTab.closest("tab-group") !== groupEl) {
+          gBrowser.moveTabToExistingGroup(newTab, groupEl);
+        }
+      }
+      reopened++;
+    } catch (e) {
+      console.error(`${LOG} undo reopen failed for "${s.title}":`, e);
+    }
+  }
   lastSnapshot = null;
   try {
     window.gZenWorkspaces?.updateTabsContainers?.();
@@ -67,31 +105,24 @@ export const undoLastTidy = async (workspaceId) => {
   try {
     if (workspaceId) syncAllGroupColors(workspaceId, rules);
   } catch {}
-  showToast(`Undid last tidy (${restored} tab(s) restored)`);
-  console.log(`${LOG} undo: restored ${restored} tab(s)`);
-  return restored;
+  const summary = `Undid last tidy (${restored} restored${reopened > 0 ? `, ${reopened} reopened` : ""})`;
+  showToast(summary);
+  console.log(`${LOG} undo: restored ${restored} tab(s), reopened ${reopened} tab(s)`);
+  return restored + reopened;
 };
 
 // ─── Duplicate tabs ─────────────────────────────────────────────────────────
-
-const normalizeDupeUrl = (url) => {
-  try {
-    const u = new URL(url);
-    u.hash = "";
-    u.search = "";
-    const s = u.toString();
-    return s.endsWith("/") ? s.slice(0, -1) : s;
-  } catch {
-    return (url || "").split("#")[0];
-  }
-};
+// Normalization + keep-alive rule live in groups.mjs (normalizeUrlForDedupe,
+// chooseDupeKeeper) and are shared with the pipeline auto-close, so the manual
+// wand-menu action and the tidy click agree on what counts as a repeat.
+// Query strings are significant — different query = different page, never
+// closed as a duplicate.
 
 export const findDuplicateGroups = (tabs) => {
   const byUrl = new Map();
   for (const t of tabs || []) {
-    const u = t.url || "";
-    if (!u.startsWith("http://") && !u.startsWith("https://")) continue;
-    const key = normalizeDupeUrl(u);
+    const key = normalizeUrlForDedupe(t.url || "");
+    if (!key) continue;
     if (!byUrl.has(key)) byUrl.set(key, []);
     byUrl.get(key).push(t);
   }
@@ -116,13 +147,12 @@ export const closeDuplicateTabs = () => {
   }
   let closed = 0;
   for (const g of groups) {
-    // Keep the grouped copy when one exists, else the earliest tab.
-    const sorted = [...g].sort(
-      (a, b) =>
-        (b._tab?.closest("tab-group") ? 1 : 0) - (a._tab?.closest("tab-group") ? 1 : 0) ||
-        (a.id ?? 0) - (b.id ?? 0)
-    );
-    for (const t of sorted.slice(1)) {
+    // Shared keep-alive rule: selected > grouped > earliest. Slice off the
+    // keeper and close the rest in input order.
+    const keepIdx = chooseDupeKeeper(g);
+    for (let i = 0; i < g.length; i++) {
+      if (i === keepIdx) continue;
+      const t = g[i];
       try {
         if (t._tab?.isConnected) {
           gBrowser.removeTab(t._tab);

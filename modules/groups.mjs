@@ -554,11 +554,39 @@ export const normalizeUrlForDedupe = (url) => {
 };
 
 /**
+ * Pick which copy of a duplicate-URL set survives. Priority: never sacrifice
+ * the tab the user is looking at; prefer the copy already placed in a group
+ * (so an ungrouped stray closes instead); otherwise keep the earliest in
+ * input order. Shared by the pipeline auto-close (groups.mjs) and the manual
+ * wand-menu action (actions.mjs) so both agree on what "duplicate" means and
+ * which copy lives.
+ *
+ * @returns {number} index into `copies`, or -1 when empty.
+ */
+export const chooseDupeKeeper = (copies) => {
+  if (!Array.isArray(copies) || copies.length === 0) return -1;
+  const selected = copies.findIndex(
+    (c) => c?._tab?.selected === true || c?._tab?.hasAttribute?.("selected")
+  );
+  if (selected >= 0) return selected;
+  const grouped = copies.findIndex((c) => {
+    try {
+      return !!c?._tab?.closest("tab-group");
+    } catch {
+      return false;
+    }
+  });
+  if (grouped >= 0) return grouped;
+  return 0;
+};
+
+/**
  * Close repeated tabs: tab-info objects sharing a normalized URL are
- * duplicates. Keeps one copy per URL — the selected tab when it's among the
- * copies, else the first in input order — and closes the rest via
- * gBrowser.removeTab. Pinned tabs never reach here (getEligibleTabs filters
- * them out); non-http(s) tabs are skipped.
+ * duplicates (see normalizeUrlForDedupe — query strings are significant, so
+ * genuinely different pages never count). Keeps one copy per URL via
+ * chooseDupeKeeper and closes the rest via gBrowser.removeTab. Pinned tabs
+ * never reach here (getEligibleTabs filters them out); non-http(s) tabs are
+ * skipped.
  *
  * @param {Array} tabInfos — tab info objects from getEligibleTabs().tabs
  * @returns {{ closed, closedTabs }} where:
@@ -581,10 +609,7 @@ export const closeDuplicateTabs = (tabInfos) => {
   const closedTabs = [];
   for (const copies of byUrl.values()) {
     if (copies.length < 2) continue;
-    const selectedIdx = copies.findIndex(
-      (c) => c?._tab?.selected === true || c?._tab?.hasAttribute?.("selected")
-    );
-    const keepIdx = selectedIdx >= 0 ? selectedIdx : 0;
+    const keepIdx = chooseDupeKeeper(copies);
     copies.forEach((c, i) => {
       if (i === keepIdx) return;
       const tab = c?._tab;

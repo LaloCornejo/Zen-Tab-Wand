@@ -7,8 +7,12 @@ Everything that puts visible chrome into `browser.xhtml`. Loaded only in the bro
 | Name | Notes |
 |---|---|
 | `addButtonToAllSeparators()` | Idempotent: skips separators that already have our button. |
-| `setupCommand()` | Registers `cmd_zenAutoOrganize` in `commandset#zenCommandSet` and wires its `command` event to `handleOrganizeClick`. |
+| `setupCommand()` | Registers `cmd_zenAutoOrganize` in `commandset#zenCommandSet` and wires its `command` event to `handleOrganizeClick`. The listener also starts the separator wave (`tidy-anim.mjs`) when animations are enabled. |
 | `setupWorkspaceHooks()` | Monkey-patches `gZenWorkspaces.onTabBrowserInserted` and `updateTabsContainers` so the button is re-injected when workspaces switch. |
+
+## Separator animations (`modules/tidy-anim.mjs`)
+
+Wave sweep, failure pulse, and wand-button visibility gating live in their own module (split out so the click pipeline can drive them without an import cycle — this file already imports `click-handler.mjs` for the command listener). Lifecycle: the command listener starts the wave, `handleOrganizeClick` stops it in a `finally` when the run ends, and a Pass 2 exception hands the separator to the failure pulse (which self-resets after its pulses). All entry points no-op when the `tidy-animations` pref is false.
 
 ## Button placement
 

@@ -17,6 +17,7 @@ import {
   syncAllGroupColors,
 } from "./groups.mjs";
 import { runPass1, applyPass1, matchesDomain } from "./pass1.mjs";
+import { tidyCleanupAnimation, tidyStartFailureAnimation } from "./tidy-anim.mjs";
 import { runPass2, runPass2Fresh, applyPass2, classifyIntoGroups } from "./ai.mjs";
 import { takeSnapshot, parkDustyTabs } from "./actions.mjs";
 import { checkOllamaReady, reportOllamaError, normalizeOllamaHost, runPass2Ollama, runPass2OllamaFresh, classifyExistingGroupsBatch, proposeTitleTermPatches } from "./ollama.mjs";
@@ -119,14 +120,23 @@ export const handleOrganizeClick = async () => {
     return;
   }
   organizeInFlight = true;
+  organizeFailed = false;
   try {
     await organizeInner();
   } finally {
     organizeInFlight = false;
+    // Stop the separator wave the command listener started. Skipped when the
+    // run failed — the failure pulse owns the separator until it self-resets.
+    if (!organizeFailed) {
+      try { tidyCleanupAnimation(); } catch {}
+    }
+    organizeFailed = false;
   }
 };
 
 let organizeInFlight = false;
+// Set when Pass 2 throws, so the finally above leaves the failure pulse alone.
+let organizeFailed = false;
 export const isOrganizing = () => organizeInFlight;
 
 const organizeInner = async () => {
@@ -608,6 +618,10 @@ const organizeInner = async () => {
         }
       } catch (e) {
         console.error(`${LOG} Pass 2 failed:`, e);
+        // Hand the separator to the failure pulse — the handleOrganizeClick
+        // finally leaves it alone (organizeFailed) until it self-resets.
+        organizeFailed = true;
+        try { tidyStartFailureAnimation(); } catch {}
       } finally {
         setButtonThinking(false);
       }
