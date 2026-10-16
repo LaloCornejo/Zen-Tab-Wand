@@ -1328,7 +1328,6 @@ dialog.zao-warning-dialog::backdrop {
 @keyframes zao-spin {
   to { transform: rotate(360deg); }
 }
-
 /* TIDY_FUSION — separator wave SVG, wand/sort buttons, brush + pulse animations.
    Ported verbatim from Tidy userChrome.css B8/C1/C2; #sort-button selectors are
    kept working AND mirrored to #tab-wand-button so both entry scripts style up. */

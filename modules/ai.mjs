@@ -148,6 +148,18 @@ const buildEmbedText = (titleOrInfo) => {
 // token cap, but generous enough to fit title + hostname + rich snippet).
 const MAX_EMBED_INPUT_CHARS = 1000;
 
+// TIDY_FUSION-2: richer embed input — title + (hostname) + page snippet
+// (og:type, h1, description), mirroring runPass2Fresh. embed() takes strings
+// directly, bypassing the {title, hostname} formatter above.
+const buildRichEmbedText = (title, hostname, snippetByHostname) => {
+  const parts = [];
+  if (title) parts.push(title);
+  if (hostname) parts.push(`(${hostname})`);
+  const snip = hostname ? snippetByHostname?.get(hostname) : "";
+  if (snip) parts.push(snip);
+  return parts.join(" ").trim() || hostname || title || "";
+};
+
 // The MLEngineParent port can die between clicks (Firefox tears it down when
 // the engine pref flips, or when memory pressure kicks in). When that happens
 // the cached `embeddingEnginePromise` still resolves to a dead engine whose
@@ -187,28 +199,39 @@ const embed = async (input) => {
 // without yielding the browser tab can freeze for many seconds.
 //
 // Dead-engine recovery: if every entry in a chunk reports dead-port, we
-// invalidate the cached engine promise and retry the chunk ONCE. This handles
-// the common case where the user toggled engine prefs and the ML engine's
-// port closed — recreating loads a fresh engine. Limited to one retry per
-// batch to avoid infinite recreation loops when the engine genuinely won't
-// load.
+// drop the cached engine promise, wait for EngineProcess to respawn, and
+// retry — up to twice per batch. The old single immediate retry usually lost:
+// recreating back-to-back reuses a half-torn-down port, so the retry died the
+// same way. The 1.5s backoff gives the ML process room to come back.
+const EMBED_RECREATE_LIMIT = 2;
+const EMBED_RESPAWN_WAIT_MS = 1500;
+
+const resetEmbeddingEngine = async () => {
+  embeddingEnginePromise = null;
+  try {
+    await loadEmbeddingEngine();
+  } catch {}
+};
 const embedBatch = async (inputs, opts = {}) => {
   const batchSize = opts.batchSize ?? CONFIG.AI_EMBEDDING_BATCH_SIZE;
   const yieldBetween = !!opts.yieldBetween;
   const out = [];
-  let alreadyRecreated = false;
   for (let i = 0; i < inputs.length; i += batchSize) {
     const chunk = inputs.slice(i, i + batchSize);
     let results = await Promise.all(chunk.map(embed));
     // A genuinely dead engine yields SENTINEL for every input it touches. Inputs that buildEmbedText
     // rejected as empty come back as plain null. Treat the chunk as "dead-port suspected" when at
     // least one says SENTINEL and nothing succeeded.
-    const someDead = results.some((r) => r === DEAD_PORT_SENTINEL);
-    const allDeadOrNull = results.every((r) => r === DEAD_PORT_SENTINEL || r === null);
-    if (someDead && allDeadOrNull && !alreadyRecreated) {
-      console.warn(`${LOG} embedBatch: every embed reported "Port does not exist" — invalidating engine cache and retrying chunk`);
-      embeddingEnginePromise = null;
-      alreadyRecreated = true;
+    let recreations = 0;
+    while (
+      recreations < EMBED_RECREATE_LIMIT &&
+      results.some((r) => r === DEAD_PORT_SENTINEL) &&
+      results.every((r) => r === DEAD_PORT_SENTINEL || r === null)
+    ) {
+      recreations++;
+      console.warn(`${LOG} embedBatch: every embed reported "Port does not exist" — respawning engine (attempt ${recreations}/${EMBED_RECREATE_LIMIT})`);
+      await resetEmbeddingEngine();
+      await new Promise((resolve) => setTimeout(resolve, EMBED_RESPAWN_WAIT_MS));
       results = await Promise.all(chunk.map(embed));
     }
     // Normalize sentinels back to null so downstream code sees a clean
@@ -251,14 +274,18 @@ const computeExistingGroupTabEmbeddings = async (workspaceId, rules, excludeTabs
     ).filter((t) => !excludeTabs.has(t));
     if (tabsInGroup.length === 0) continue;
     // Same title+hostname format we use for the unmatched candidates so the
-    // embeddings live in the same semantic space.
-    const inputs = tabsInGroup.map((t) => ({
-      title: getTabTitle(t),
-      hostname: (() => {
-        try { return new URL(t.linkedBrowser?.currentURI?.spec || "").hostname.replace(/^www\./, ""); }
-        catch { return ""; }
-      })(),
-    })).filter((i) => i.title);
+    // embeddings live in the same semantic space — enriched with snippets
+    // when the caller supplies its map (TIDY_FUSION-2).
+    const snippetMap = opts.snippetByHostname;
+    const inputs = tabsInGroup.map((t) => {
+      const title = getTabTitle(t);
+      let hostname = "";
+      try { hostname = new URL(t.linkedBrowser?.currentURI?.spec || "").hostname.replace(/^www\./, ""); }
+      catch { hostname = ""; }
+      if (!title) return null;
+      if (snippetMap) return buildRichEmbedText(title, hostname, snippetMap);
+      return { title, hostname };
+    }).filter(Boolean);
     if (inputs.length === 0) continue;
     const embs = (await embedBatch(inputs, { batchSize, yieldBetween })).filter((v) => v);
     if (embs.length === 0) continue;
@@ -304,8 +331,7 @@ const TIDY_KEYWORD_STOPWORDS = new Set([
   "did", "its", "let", "put", "say", "she", "too", "use",
 ]);
 
-const extractTidyKeywords = (titles) => {
-  const wordCount = {};
+const extractTidyKeywords = (titles) => {  const wordCount = {};
   for (const w of titles.join(" ").toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2)) {
     wordCount[w] = (wordCount[w] || 0) + 1;
   }
@@ -316,8 +342,30 @@ const extractTidyKeywords = (titles) => {
     .map(([word]) => word);
 };
 
-let topicEnginePromise = null;
+// Hosts where one domain holds many unrelated topics — saving the bare domain
+// into a rule over-claims every future tab on that host (youtube.com once
+// captured all YouTube tabs into a single show's group).
+const isPlatformHost = (hostname) => {
+  if (!hostname) return false;
+  const hosts = CONFIG.PLATFORM_HOSTS || [];
+  return hosts.some((p) => hostname === p || hostname.endsWith(`.${p}`));
+};
 
+// Title words recurring across cluster members (min count 2) — the safe thing
+// to persist when a cluster lives on platform hosts.
+const frequentTitleTerms = (titles, minCount = 2, maxTerms = 3) => {
+  const counts = {};
+  for (const w of titles.join(" ").toLowerCase().replace(/[^\w\s]/g, " ").split(/\s+/).filter((word) => word.length > 2 && !TIDY_KEYWORD_STOPWORDS.has(word))) {
+    counts[w] = (counts[w] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .filter(([, n]) => n >= minCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxTerms)
+    .map(([word]) => word);
+};
+
+let topicEnginePromise = null;
 const loadTopicEngine = () => {
   if (topicEnginePromise) return topicEnginePromise;
   topicEnginePromise = (async () => {
@@ -336,6 +384,21 @@ const loadTopicEngine = () => {
     throw e;
   });
   return topicEnginePromise;
+};
+
+// TIDY_FUSION-3: preload the bundled models so the first wand click never
+// pays the cold-start cost (cold start is what produced the "Port does not
+// exist" cascade — engine port torn down before first use). Fire-and-forget
+// by design; failures stay silent, the click path retries anyway.
+export const warmupLocalEngines = () => {
+  loadEmbeddingEngine().then(
+    () => console.log(`${LOG} AI: local embedding engine warmed`),
+    (e) => console.warn(`${LOG} AI: embedding warmup failed (click path retries anyway):`, e?.message || e)
+  );
+  loadTopicEngine().then(
+    () => console.log(`${LOG} AI: topic engine warmed`),
+    (e) => console.warn(`${LOG} AI: topic warmup failed (hostname fallback covers naming):`, e?.message || e)
+  );
 };
 
 // Name a fresh cluster with the bundled topic model; fall back to Wand's
@@ -371,6 +434,57 @@ const nameClusterWithTopic = async (members) => {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * Local constrained-vocabulary classification for the preview modal's
+ * "re-assign to planned" lane: score each pending tab by MAX embedding
+ * similarity against every member tab of every kept bucket, first bucket
+ * past the existing-group bar wins. Same shape as the Ollama lane.
+ */
+export const classifyIntoGroups = async (pendingTabs, buckets) => {
+  const assignments = [];
+  const skipped = [];
+  if (!pendingTabs?.length || !buckets?.length) {
+    return { assignments, skipped: [...(pendingTabs || [])] };
+  }
+  const emptyMap = new Map();
+  const bucketEmbs = new Map(); // name → number[][]
+  for (const b of buckets) {
+    if (!b?.name || !b.tabs?.length) continue;
+    const embs = (
+      await embedBatch(
+        b.tabs.map((t) => buildRichEmbedText(t.title, t.hostname, emptyMap)),
+        {}
+      )
+    ).filter(Boolean);
+    if (embs.length > 0) bucketEmbs.set(b.name, embs);
+  }
+  const pendEmbs = await embedBatch(
+    pendingTabs.map((t) => buildRichEmbedText(t.title, t.hostname, emptyMap)),
+    {}
+  );
+  pendingTabs.forEach((tabInfo, i) => {
+    const emb = pendEmbs[i];
+    if (!emb) {
+      skipped.push(tabInfo);
+      return;
+    }
+    let best = null;
+    for (const [name, embs] of bucketEmbs) {
+      let m = 0;
+      for (const e of embs) {
+        const s = cosineSimilarity(emb, e);
+        if (s > m) m = s;
+      }
+      if (m > CONFIG.AI_EXISTING_GROUP_THRESHOLD && (!best || m > best.sim)) {
+        best = { groupName: name, sim: m };
+      }
+    }
+    if (best) assignments.push({ tabInfo, groupName: best.groupName, similarity: best.sim });
+    else skipped.push(tabInfo);
+  });
+  return { assignments, skipped };
+};
+
+/**
  * Run Pass 2 AI sorting over the Pass-1-unmatched tabs.
  *
  * @param {Array} unmatched   — tab info objects from runPass1 result
@@ -398,9 +512,32 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   const useChunking = unmatched.length > CONFIG.AI_LOCAL_CHUNK_THRESHOLD;
   const batchSize = useChunking ? getLocalAIBatchSize() : CONFIG.AI_EMBEDDING_BATCH_SIZE;
 
+  // TIDY_FUSION-2: one snippet fetch per unique hostname (bounded parallel;
+  // fetchPageSnippet self-times-out, misses drop to "" silently). Same
+  // enriched signal runPass2Fresh uses — bare titles under-specify the topic.
+  const snippetByHostname = new Map();
+  {
+    const urlByHostname = new Map();
+    for (const t of unmatched) {
+      const u = t.url || "";
+      if (t.hostname && (u.startsWith("http://") || u.startsWith("https://")) && !urlByHostname.has(t.hostname)) {
+        urlByHostname.set(t.hostname, u);
+      }
+    }
+    const hosts = [...urlByHostname.keys()];
+    if (hosts.length > 0) {
+      const t0 = performance.now();
+      const snippets = await Promise.all(hosts.map((h) => fetchPageSnippet(urlByHostname.get(h))));
+      let hits = 0;
+      hosts.forEach((h, i) => { if (snippets[i]) { snippetByHostname.set(h, snippets[i]); hits++; } });
+      console.log(`${LOG} AI: page snippets ${hits}/${hosts.length} in ${Math.round(performance.now() - t0)}ms`);
+    }
+  }
+
   // Resolve a per-tab embedding. Without chunking, `tabEmbeddings[i]`.
   // With chunking, the embedding for the tab's hostname (one per hostname).
   let getEmbeddingForTab;
+  let firstPassEmbeddings = [];
 
   try {
     if (useChunking) {
@@ -416,25 +553,35 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
       console.log(`${LOG} AI: large workspace (${unmatched.length} > ${CONFIG.AI_LOCAL_CHUNK_THRESHOLD}) — chunking on, deduped to ${reps.length} unique hostname(s), batchSize=${batchSize}`);
 
       const repEmbeddings = await embedBatch(
-        reps.map((t) => ({ title: t.title, hostname: t.hostname })),
+        reps.map((t) => buildRichEmbedText(t.title, t.hostname, snippetByHostname)),
         { batchSize, yieldBetween: true },
       );
       const hostToEmb = new Map();
       reps.forEach((t, i) => {
         if (repEmbeddings[i]) hostToEmb.set(t.hostname, repEmbeddings[i]);
       });
+      firstPassEmbeddings = [...hostToEmb.values()];
       getEmbeddingForTab = (tabInfo) => hostToEmb.get(tabInfo.hostname);
     } else {
       const tabEmbeddings = await embedBatch(
-        unmatched.map((t) => ({ title: t.title, hostname: t.hostname })),
+        unmatched.map((t) => buildRichEmbedText(t.title, t.hostname, snippetByHostname)),
         { batchSize },
       );
+      firstPassEmbeddings = tabEmbeddings;
       getEmbeddingForTab = (_tabInfo, idx) => tabEmbeddings[idx];
     }
   } catch (e) {
     console.error(`${LOG} AI: failed to load embedding engine:`, e);
     showToast("AI sorting unavailable — embedding model failed to load");
     return { ...empty, failed: "embedding engine load failed" };
+  }
+
+  // Engine-dead visibility: retries exhausted and NOTHING embedded means the
+  // model wouldn't start — say so loudly instead of logging "nothing to
+  // group" as if the tabs were merely unmatchable.
+  if (unmatched.length > 0 && firstPassEmbeddings.length > 0 && firstPassEmbeddings.every((e) => !e)) {
+    showToast("Local AI engine unreachable — embedding model would not start");
+    return { ...empty, skipped: unmatched, failed: "embedding engine unreachable" };
   }
 
   // 2. Collect per-tab embeddings for existing rule-matched groups. Exclude the
@@ -445,6 +592,7 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   const groupTabEmbeddings = await computeExistingGroupTabEmbeddings(workspaceId, rules, excludeSet, {
     batchSize: useChunking ? batchSize : undefined,
     yieldBetween: useChunking,
+    snippetByHostname,
   });
   console.log(`${LOG} AI: collected per-tab embeddings for ${groupTabEmbeddings.size} existing group(s): ${[...groupTabEmbeddings.keys()].map((n) => `${n}(${groupTabEmbeddings.get(n).length})`).join(", ") || "(none)"}`);
 
@@ -452,10 +600,13 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   //    against any individual tab in the group (not a centroid average).
   const assignedToExisting = [];
   const remainder = []; // { info, embedding } for tabs that didn't fit
+  let embeddedCount = 0;
+  let noEmbeddingCount = 0;
   for (let i = 0; i < unmatched.length; i++) {
     const tabInfo = unmatched[i];
     const emb = getEmbeddingForTab(tabInfo, i);
-    if (!emb) { empty.skipped.push(tabInfo); continue; }
+    if (!emb) { empty.skipped.push(tabInfo); noEmbeddingCount++; continue; }
+    embeddedCount++;
 
     let best = null;
     const allSims = [];
@@ -497,24 +648,86 @@ export const runPass2 = async (unmatched, rules, workspaceId) => {
   // applyPass2 honors the "New AI groups" pref (save-once/prompt/preview).
   const newGroups = [];
   const skipped = [...empty.skipped];
+  let singletonCount = 0;
+  // TIDY_FUSION-1: centroids of existing groups so near-duplicate clusters
+  // fold into them instead of spawning "Github" next to "GitHub".
+  const groupCentroids = new Map();
+  for (const [groupName, embs] of groupTabEmbeddings) {
+    const avg = averageVectors(embs);
+    if (avg) groupCentroids.set(groupName, l2Normalize(avg));
+  }
+  const MERGE_BAR = CONFIG.TIDY_HIGH * 0.9;
   if (remainder.length >= 2) {
     const idxGroups = clusterEmbeddings(
       remainder.map((r) => r.embedding),
-      CONFIG.TIDY_LOW
+      typeof CONFIG.TIDY_LOW === "number" ? CONFIG.TIDY_LOW : 0.45
     );
     for (const idx of idxGroups) {
       if (idx.length < 2) {
         idx.forEach((k) => skipped.push(remainder[k].info));
+        singletonCount += idx.length;
         continue;
       }
       const members = idx.map((k) => remainder[k].info);
+      const memberAvg = averageVectors(idx.map((k) => remainder[k].embedding));
+      const centroid = memberAvg ? l2Normalize(memberAvg) : null;
+      let mergeTo = null;
+      if (centroid) {
+        for (const [groupName, gc] of groupCentroids) {
+          const s = cosineSimilarity(centroid, gc);
+          if (s >= MERGE_BAR && (!mergeTo || s > mergeTo.sim)) mergeTo = { groupName, sim: s };
+        }
+      }
+      if (mergeTo) {
+        for (const m of members) assignedToExisting.push({ tabInfo: m, groupName: mergeTo.groupName, similarity: mergeTo.sim });
+        console.log(`${LOG} AI: folded ${members.length} tab(s) into existing "${mergeTo.groupName}" (centroid ${mergeTo.sim.toFixed(3)})`);
+        continue;
+      }
       const name = await nameClusterWithTopic(members);
       newGroups.push({ name, tabs: members });
       console.log(`${LOG} AI: new cluster "${name}" (${members.length} tab(s))`);
     }
   } else {
     remainder.forEach((r) => skipped.push(r.info));
+    singletonCount += remainder.length;
   }
+
+  // Deterministic fallback: leftover tabs sharing a hostname group up WITHOUT
+  // embeddings — same-site leftovers land together even on engine-dead runs or
+  // when titles are too dissimilar to clear the AI bar. Members that match an
+  // existing rule name file into it; the rest form a host-named group.
+  {
+    const byHost = new Map();
+    for (const t of skipped) {
+      if (!t.hostname) continue;
+      if (!byHost.has(t.hostname)) byHost.set(t.hostname, []);
+      byHost.get(t.hostname).push(t);
+    }
+    const grouped = new Set();
+    for (const [, members] of byHost) {
+      if (members.length < 2) continue;
+      const name = nameClusterFromHostnames(members);
+      if (rules.some((r) => r.name === name)) {
+        for (const m of members) assignedToExisting.push({ tabInfo: m, groupName: name, similarity: 1 });
+        console.log(`${LOG} AI: host fallback — ${members.length} "${members[0].hostname}" tab(s) → existing "${name}"`);
+      } else {
+        newGroups.push({ name, tabs: members });
+        console.log(`${LOG} AI: host fallback — new group "${name}" (${members.length} tab(s))`);
+      }
+      members.forEach((m) => grouped.add(m));
+      singletonCount = Math.max(0, singletonCount - members.length);
+    }
+    if (grouped.size > 0) {
+      const rest = skipped.filter((t) => !grouped.has(t));
+      skipped.length = 0;
+      skipped.push(...rest);
+    }
+  }
+
+  // Visibility into misses: "embedded" proves the engine works, so a later
+  // "nothing to group" reads as genuinely-uncategorized, not engine failure.
+  console.log(`${LOG} AI: embedded ${embeddedCount}/${unmatched.length} unmatched tab(s)` +
+    (skipped.length > 0 ? `, skipped ${skipped.length} (${noEmbeddingCount} no embedding, ${singletonCount} singleton)` : ""));
 
   return { assignedToExisting, newGroups, skipped };
 };
@@ -1000,7 +1213,9 @@ export const applyPass2 = (pass2Result, workspaceId, rules) => {
         movedToExisting++;
       }
       if (existingBehavior === "always-add") {
-        if (addDomainToRule(a.groupName, a.tabInfo.hostname, rules)) rulesGrown++;
+        if (isPlatformHost(a.tabInfo.hostname)) {
+          console.log(`${LOG} AI: not saving platform host "${a.tabInfo.hostname}" into rule "${a.groupName}" (title-match it instead)`);
+        } else if (addDomainToRule(a.groupName, a.tabInfo.hostname, rules)) rulesGrown++;
       }
     } catch (e) {
       console.error(`${LOG} AI: failed to move tab into "${a.groupName}":`, e);
@@ -1036,14 +1251,25 @@ export const applyPass2 = (pass2Result, workspaceId, rules) => {
       if (newGroupBehavior === "auto-add") {
         // Build a rule from the cluster's hostnames, including the chosen color
         // so syncAllGroupColors on future tidy-clicks keeps the same color.
+        // Platform hosts never persist as domains (they'd over-claim); recurring
+        // title terms persist instead. A platform-only cluster with no shared
+        // terms saves nothing — the group still exists, just transiently.
         const hostnames = [...new Set(cluster.tabs.map((t) => t.hostname).filter((h) => h))];
-        if (hostnames.length > 0 && !rules.some((r) => r.name === cluster.name)) {
+        const saveDomains = hostnames.filter((h) => !isPlatformHost(h));
+        let saveTerms = [];
+        if (saveDomains.length < hostnames.length || saveDomains.length === 0) {
+          saveTerms = frequentTitleTerms(cluster.tabs.map((t) => t.title).filter(Boolean));
+        }
+        if ((saveDomains.length > 0 || saveTerms.length > 0) && !rules.some((r) => r.name === cluster.name)) {
           rules.push({
             name: cluster.name,
-            domains: hostnames,
+            domains: saveDomains,
+            ...(saveTerms.length > 0 ? { titleTerms: saveTerms } : {}),
             color,
           });
           newRulesCreated++;
+        } else if (!rules.some((r) => r.name === cluster.name)) {
+          console.log(`${LOG} AI: no rule saved for "${cluster.name}" (platform hosts, no shared title terms)`);
         }
       } else if (newGroupBehavior === "prompt") {
         openZenEditModalForGroup(newGroup);

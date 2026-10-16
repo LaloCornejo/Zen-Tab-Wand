@@ -8,6 +8,7 @@ import { domCache } from "./modules/tabs.mjs";
 import { readRulesPref, getAIEngine, getOllamaHost, getOllamaModel, isOllamaWarmupEnabled } from "./modules/rules.mjs";
 import { syncAllGroupColors } from "./modules/groups.mjs";
 import { warmupOllama } from "./modules/ollama.mjs";
+import { warmupLocalEngines } from "./modules/ai.mjs";
 import {
   setupCommand,
   setupWorkspaceHooks,
@@ -65,6 +66,19 @@ const tryInitializeBrowser = () => {
       // be running yet).
       if (getAIEngine() === "ollama" && isOllamaWarmupEnabled()) {
         warmupOllama(getOllamaHost(), getOllamaModel());
+      }
+
+      // Same idea for the bundled Local engine: preload both models once the
+      // browser is idle so the first click never cold-starts the ML port
+      // (cold start caused the "Port does not exist" cascade). Deferred to
+      // idle to avoid contending with startup.
+      if (getAIEngine() === "local") {
+        const warm = () => warmupLocalEngines();
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(warm, { timeout: 15000 });
+        } else {
+          setTimeout(warm, 8000);
+        }
       }
 
       console.log(`${LOG} initialized (browser) — build ${BUILD_VERSION}`);

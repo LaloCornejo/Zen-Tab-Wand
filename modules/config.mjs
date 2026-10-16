@@ -81,12 +81,13 @@ export const CONFIG = {
   // local AI only fires on slam dunks.
   AI_EXISTING_GROUP_THRESHOLD: 0.65,    // min (raw + boost) cosine sim for "tab belongs to existing group"
   AI_EXISTING_GROUP_BOOST: 0.10,        // added to existing-group sim
-  // TIDY_FUSION — tiered Tidy donor thresholds (tidy-tabs.uc.js:8-19 CONFIG).
-  // Wand keys above stay untouched; these govern Tidy-grafted tiered scoring.
-  TIDY_LOW: 0.45,                       // Tidy SIMILARITY_THRESHOLD (new-cluster bar)
-  TIDY_HIGH: 0.65,                      // Tidy GROUP_SIMILARITY_THRESHOLD (existing-group bar)
-  TIDY_MIN_TABS_FOR_SORT: 6,            // Tidy MIN_TABS_FOR_SORT (button visibility gate)
   AI_EMBEDDING_BATCH_SIZE: 5,           // tabs per parallel embedding batch (small-workspace default)
+  TIDY_LOW: 0.45,                       // greedy new-cluster bar (Tidy SIMILARITY_THRESHOLD)
+  TIDY_HIGH: 0.65,                      // existing-group bar reference (Tidy GROUP_SIMILARITY_THRESHOLD; merge bar = ×0.9)
+  // TIDY_FUSION — Tidy donor gating + pref names for the animation/ATG grafts.
+  TIDY_MIN_TABS_FOR_SORT: 6,            // Tidy MIN_TABS_FOR_SORT (button visibility gate)
+  TIDY_ANIMATIONS_PREF: "extensions.zen-auto-organize.tidy-animations",
+  TIDY_ATG_COLORS_PREF: "extensions.zen-auto-organize.tidy-atg-colors",
 
   // Local-AI chunking. When the count of unmatched tabs to embed exceeds the
   // chunking threshold, the engine switches to a more conservative pipeline:
@@ -98,10 +99,23 @@ export const CONFIG = {
   AI_LOCAL_CHUNK_THRESHOLD: 75,         // unmatched count above which chunking + dedupe kicks in
   AI_LOCAL_BATCH_SIZE_PREF: "extensions.zen-auto-organize.ai-local-batch-size",
   AI_LOCAL_BATCH_SIZE_DEFAULT: 30,      // pref default; user-overridable
-  AI_LOCAL_CONFIRM_THRESHOLD: 500,      // unmatched count above which a confirmation modal is shown before Pass 2
-  // TIDY_FUSION — pref gates for Tidy grafts (default-recoverable; Wand behavior = both false/off).
-  TIDY_ANIMATIONS_PREF: "extensions.zen-auto-organize.tidy-animations",
-  TIDY_ATG_COLORS_PREF: "extensions.zen-auto-organize.tidy-atg-colors",
+  AI_LOCAL_CONFIRM_THRESHOLD: 500,         // unmatched count above which a confirmation modal is shown before Pass 2
+
+  // Automation (all off by default — opt in via the Automation section).
+  AUTO_TIDY_THRESHOLD_PREF: "extensions.zen-auto-organize.auto-tidy-threshold",
+  AUTO_TIDY_DEBOUNCE_MS: 3000,              // quiet period after tab activity before auto-tidy fires
+  DUSTY_DAYS_PREF: "extensions.zen-auto-organize.dusty-days",
+  DUSTY_GROUP_NAME: "Dusty",                // parked stale tabs live here; auto-registered as a rule so it survives sweeps
+
+  // Multi-topic platforms: one domain hosts many unrelated topics, so saving
+  // the bare domain into a rule over-claims (youtube.com once captured every
+  // YouTube tab into a single show's group). AI rule-growth never saves these
+  // as domains — it saves recurring title terms instead. Existing user rules
+  // are untouched; this only guards future auto-saves.
+  PLATFORM_HOSTS: [
+    "youtube.com", "youtu.be", "reddit.com", "x.com", "twitter.com",
+    "facebook.com", "instagram.com", "tiktok.com", "twitch.tv",
+  ],
 
   // chrome:// URLs served by Sine from this mod's directory.
   RULES_URL: "chrome://sine/content/zen-tab-wand/rules.json",

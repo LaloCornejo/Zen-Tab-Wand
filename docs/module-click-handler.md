@@ -20,7 +20,11 @@ The function the toolbar button invokes. Sequences all the passes.
 6.  skip-domain parking               — tabs matching the skip list are moved
                                         to the top via moveTabsToTop, excluded
                                         from the rest of the pipeline
-6b. closeDuplicateTabs(tabs)            — when the close-duplicates pref is on
+6b. takeSnapshot(allTabs)               — snapshot pre-tidy membership so
+                                        "Undo last tidy" can restore it
+6c. parkDustyTabs(tabs, ws, rules)      — opt-in Automation: stale tabs collect
+                                        into the Dusty group, leave the pipeline
+6d. closeDuplicateTabs(tabs)            — when the close-duplicates pref is on
                                         (default), tabs sharing a normalized URL
                                         are repeats: keep one copy (selected
                                         tab wins, else first), close the rest
