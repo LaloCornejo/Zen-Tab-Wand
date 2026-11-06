@@ -237,6 +237,17 @@ export const isAutoSortOnOpenEnabled = () => {
   }
 };
 
+// When ON (default), a tab that navigates to a new URL is re-matched: a rule
+// match moves it, and a grouped tab whose new page matches no rule is ejected
+// from its group. Redirect chains and SPA route changes are debounced.
+export const isAutoSortOnNavigateEnabled = () => {
+  try {
+    return Services.prefs.getBoolPref(CONFIG.AUTO_SORT_ON_NAVIGATE_PREF, true);
+  } catch {
+    return true;
+  }
+};
+
 export const getMatchMode = () => {
   try {
     const mode = Services.prefs.getStringPref(CONFIG.MATCH_MODE_PREF, "url-then-title");

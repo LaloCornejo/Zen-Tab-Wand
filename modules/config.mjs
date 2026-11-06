@@ -54,6 +54,7 @@ export const CONFIG = {
   CLOSE_DUPLICATES_PREF: "extensions.zen-auto-organize.close-duplicates",
   RESORT_GROUPED_PREF: "extensions.zen-auto-organize.resort-grouped",
   AUTO_SORT_ON_OPEN_PREF: "extensions.zen-auto-organize.auto-sort-on-open",
+  AUTO_SORT_ON_NAVIGATE_PREF: "extensions.zen-auto-organize.auto-sort-on-navigate",
   MATCH_MODE_PREF: "extensions.zen-auto-organize.match-mode",
   GRADIENT_STYLE_PREF: "extensions.zen-auto-organize.gradient-style",
 

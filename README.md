@@ -173,6 +173,7 @@ In Ollama **Preview + Save Rule** (new group) and **Move + Save Domain** (existi
 ![Custom Icon Upload](docs/images/custom-emoji.png)
 - **Strict rule enforcement** — when on, tabs sitting inside a group without any currently matching rule get ejected to the top on every wand click. It uses the active Rule matching priority, so title-only mode enforces title matches instead of domain matches. Off by default.
 - **Auto-arrange new tabs** — every tab is matched against the rules as it opens. A match moves it into its group; a tab that inherited its opener's group without matching any rule is ejected to the top of the workspace. Bulk opens (session restore, "open all in tabs") and pinned/essential tabs are ignored. On by default.
+- **Auto-arrange on navigation** — the same matching runs when a tab's URL changes, so a tab that navigates somewhere unrelated leaves its old group and a tab that lands on a ruled site joins the right one. Redirect chains and SPA route changes are debounced; bulk activity is ignored. On by default.
 - **Gradient style** — choose how two-color group gradients are drawn. Left to right is the default.
 - **Minimal style** — strips the colored backgrounds and gradients from groups for a flatter look. Rule icons stay visible.
 - **Keep Ollama model warm** — preloads the model at browser startup and keeps it in VRAM between clicks. Faster, but uses VRAM continuously.

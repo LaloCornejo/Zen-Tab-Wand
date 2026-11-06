@@ -49,6 +49,12 @@
     "defaultValue": true
   },
   {
+    "type": "checkbox",
+    "label": "Auto-arrange on navigation — re-match a tab when its URL changes, moving or ejecting it as needed",
+    "property": "extensions.zen-auto-organize.auto-sort-on-navigate",
+    "defaultValue": true
+  },
+  {
     "type": "dropdown",
     "label": "Rule matching priority — choose whether URL/domain matches or title matches are checked first",
     "property": "extensions.zen-auto-organize.match-mode",
