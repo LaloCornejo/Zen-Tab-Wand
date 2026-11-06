@@ -226,6 +226,17 @@ export const isResortGroupedEnabled = () => {
   }
 };
 
+// When ON (default), every newly opened tab is matched against the rules as
+// it opens: rule matches move into their group, and a tab that inherited its
+// opener's group without matching any rule is ejected to the workspace top.
+export const isAutoSortOnOpenEnabled = () => {
+  try {
+    return Services.prefs.getBoolPref(CONFIG.AUTO_SORT_ON_OPEN_PREF, true);
+  } catch {
+    return true;
+  }
+};
+
 export const getMatchMode = () => {
   try {
     const mode = Services.prefs.getStringPref(CONFIG.MATCH_MODE_PREF, "url-then-title");

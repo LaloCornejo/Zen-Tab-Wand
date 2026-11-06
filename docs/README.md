@@ -50,6 +50,7 @@ See [architecture.md](architecture.md) for the full picture; the short version:
 - [module-click-handler.md](module-click-handler.md) — tidy click orchestrator
 - [module-browser-ui.md](module-browser-ui.md) — wand button, command, workspace hooks
 - [module-browser-hooks.md](module-browser-hooks.md) — tab right-click "Add to Rule" submenu + TabGroupCreate color re-apply + minimal-style observer
+- [module-auto-sort.md](module-auto-sort.md) — arrange each tab as it opens (rule match moves, inherited group ejects)
 - [module-prefs-ui.md](module-prefs-ui.md) — Sine dialog detection, widget injection, conditional fields
 - [module-widget.md](module-widget.md) — rules editor table + Backup & Restore
 - [module-color-picker.md](module-color-picker.md) — color popover + palette fetch

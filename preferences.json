@@ -43,6 +43,12 @@
     "defaultValue": true
   },
   {
+    "type": "checkbox",
+    "label": "Auto-arrange new tabs — match every tab as it opens; eject it from an inherited parent group when nothing matches",
+    "property": "extensions.zen-auto-organize.auto-sort-on-open",
+    "defaultValue": true
+  },
+  {
     "type": "dropdown",
     "label": "Rule matching priority — choose whether URL/domain matches or title matches are checked first",
     "property": "extensions.zen-auto-organize.match-mode",

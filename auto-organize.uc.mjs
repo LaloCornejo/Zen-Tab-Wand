@@ -28,6 +28,7 @@ import {
   setupSettingsObserver,
   teardownSettingsObserver,
 } from "./modules/prefs-ui.mjs";
+import { setupAutoSortOnOpen, teardownAutoSortOnOpen } from "./modules/auto-sort.mjs";
 
 const url = window.location.href;
 const isBrowserContext = url === "chrome://browser/content/browser.xhtml";
@@ -51,6 +52,7 @@ const tryInitializeBrowser = () => {
       setupTabGroupCreateHook();
       setupCollapsedStatePersistence();
       setupMinimalStylePrefObserver();
+      setupAutoSortOnOpen();
 
       // Apply colors to groups that were restored before our hook installed
       // (the TabGroupCreate event already fired by the time the listener registered).
@@ -124,6 +126,7 @@ const cleanup = () => {
     teardownTabContextMenu();
     teardownTabGroupContextMenu();
     teardownMinimalStylePrefObserver();
+    teardownAutoSortOnOpen();
   } catch (e) {
     console.error(`${LOG} cleanup error:`, e);
   }
